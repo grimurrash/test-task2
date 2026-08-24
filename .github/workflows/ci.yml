@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    name: Защита — секреты, скрытые инструкции, хуки
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Секреты в отслеживаемых файлах
+        run: python3 scripts/ci/scan_secrets.py
+
+      - name: Скрытые инструкции в текстах репозитория
+        run: python3 scripts/scan_untrusted.py .
+
+      - name: Хуки работают так, как заявлено
+        run: python3 scripts/test_hooks.py
+
+  quality:
+    name: Качество — тесты и анализаторы
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Какой стек настроен
+        run: |
+          echo "Стек: $(cat .ci-stack)"
+
+      - name: Тесты
+        run: bash scripts/ci/test.sh
+
+      - name: Линтер
+        run: bash scripts/ci/lint.sh
+
+      - name: Статический анализ
+        run: bash scripts/ci/analyse.sh
