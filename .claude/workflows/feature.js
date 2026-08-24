@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Ревью плана',     detail: 'три независимых ревьюера: архитектура, риски, объём' },
     { title: 'Правка плана',    detail: 'сведение замечаний, до двух раундов' },
     { title: 'Реализация',      detail: 'по утверждённому плану, тесты вперёд' },
-    { title: 'Ревью результата', detail: 'три ревьюера: корректность, тесты, секреты' },
+    { title: 'Ревью результата', detail: 'две свои линзы плюс внешний ревьюер другого вендора (codex)' },
     { title: 'Исправления',     detail: 'закрыть подтверждённые находки' },
     { title: 'MR',              detail: 'ветка, коммиты, push, gh pr create' },
     { title: 'CI',              detail: 'gh pr checks до вердикта, разбор падений' },
@@ -51,7 +51,7 @@ const REVIEW_SCHEMA = {
   type: 'object',
   required: ['verdict', 'findings'],
   properties: {
-    verdict: { type: 'string', enum: ['approve', 'revise', 'block'] },
+    verdict: { type: 'string', enum: ['approve', 'revise', 'block', 'unavailable'] },
     summary: { type: 'string' },
     findings: {
       type: 'array',
@@ -166,11 +166,13 @@ ${RULES}
 const RESULT_LENSES = [
   { key: 'корректность', prompt: 'Проверь, что код делает то, что заявлено планом. Ищи логические ошибки, неверные границы, необработанные ошибочные ветки. Запускай код, не верь чтению.' },
   { key: 'тесты',        prompt: 'Проверь тесты: покрывают ли они заявленное, есть ли тест на каждую границу из плана, не подогнаны ли тесты под реализацию. Сломай код намеренно и убедись, что тест краснеет.' },
-  { key: 'безопасность', prompt: 'Ищи секреты в коде и в истории, небезопасную работу с вводом, инъекции, следы недоверенного текста. Проверь, что ничего не пишется за пределы репозитория.' },
 ]
 
+// Третья линза — модель другого вендора. Субагент видит контекст родительской
+// сессии, поэтому «независимая проверка» своими же силами остаётся приближением.
+// Здесь проверяющий действительно другой: свои веса, свой контекст, read-only.
 phase('Ревью результата')
-const results = (await parallel(RESULT_LENSES.map((lens) => () =>
+const reviewThunks = RESULT_LENSES.map((lens) => () =>
   agent(`
 Ты независимый проверяющий. Код писал не ты — автор не бывает независимым проверяющим.
 Линза: ${lens.key}. ${lens.prompt}
@@ -179,10 +181,51 @@ const results = (await parallel(RESULT_LENSES.map((lens) => () =>
 Твоя цель — найти дефекты, а не подтвердить работоспособность.
 ${RULES}
 `, { label: `ревью:${lens.key}`, phase: 'Ревью результата', schema: REVIEW_SCHEMA })
-))).filter(Boolean)
+    .then((r) => (r ? Object.assign({ lens: lens.key }, r) : null)))
 
-const defects = results.flatMap((r) => r.findings.filter((f) => f.severity !== 'minor'))
-log(`Ревью результата: вердикты ${results.map((r) => r.verdict).join(', ')}, дефектов к исправлению ${defects.length}`)
+reviewThunks.push(() =>
+  agent(`
+Твоя роль — транспорт, а не ревьюер. Судит внешняя модель, ты только передаёшь её вердикт.
+
+Выполни ровно это, из корня репозитория:
+
+  python3 scripts/review_codex.py --timeout 900 "<задание ниже одной строкой>"
+
+Задание внешнему ревьюеру: провести ревью изменений ветки ${branch} относительно ${base}
+по задаче «${task}». Оценить корректность, обработку ошибочных и граничных случаев,
+работу с учётными данными, соответствие плану ${plan.plan_path}. По каждой находке —
+файл, суть, пример.
+
+Формулируй задание как обычное ревью кода. Просьбы «найди способ обойти защиту»
+внешний провайдер отклоняет фильтром как разработку обхода — проверено на практике,
+и в этом случае вердикт вернётся unavailable вместо находок.
+
+Скрипт печатает JSON по схеме .claude/schemas/review.json. Верни его СОДЕРЖИМОЕ ДОСЛОВНО:
+не дополняй находки своими, не смягчай формулировки, не выбрасывай то, с чем не согласен.
+Если verdict равен unavailable — верни его как есть, вместе с причиной в summary.
+`, { label: 'ревью:внешний-вендор', phase: 'Ревью результата', schema: REVIEW_SCHEMA })
+    .then((r) => (r ? Object.assign({ lens: 'внешний вендор' }, r) : null)))
+
+const results = (await parallel(reviewThunks)).filter(Boolean)
+
+const external = results.find((r) => r.lens === 'внешний вендор')
+if (!external || external.verdict === 'unavailable') {
+  log(`Внешний ревьюер не отработал: ${external ? external.summary : 'агент ничего не вернул'}. ` +
+      'Проверка осталась внутримодельной — это должно быть написано в PR прямым текстом.')
+}
+
+log('Ревью результата — ' + results.map((r) => `${r.lens}: ${r.verdict} (находок ${r.findings.length})`).join(' · '))
+
+const externalOnly = external ? external.findings.filter((f) =>
+  !results.some((r) => r.lens !== 'внешний вендор' &&
+    r.findings.some((own) => own.title.toLowerCase().slice(0, 25) === f.title.toLowerCase().slice(0, 25)))) : []
+if (externalOnly.length) {
+  log(`Внешний вендор нашёл ${externalOnly.length} находок, которых нет ни у одной своей линзы — ради этого он и стоит в схеме.`)
+}
+
+const defects = results.flatMap((r) => r.findings
+  .filter((f) => f.severity !== 'minor')
+  .map((f) => Object.assign({ lens: r.lens }, f)))
 
 if (defects.length) {
   phase('Исправления')
@@ -209,6 +252,11 @@ const mr = await agent(`
 4) gh pr create --base ${base} --head ${branch} --title <короткий заголовок по задаче> --body <описание>
    В теле: задача, что сделано, как проверяли (с выводом), ссылка на план ${plan.plan_path},
    что осталось за рамками. Без эмодзи.
+   Отдельным разделом «Ревью» — вердикты всех линз:
+   ${results.map((r) => `${r.lens}: ${r.verdict}`).join(', ')}.
+   Если внешний ревьюер вернул unavailable — написать это прямо, с причиной:
+   «${external ? external.summary : 'внешний ревьюер не отработал'}».
+   Читатель PR должен видеть, чем именно проверяли, а не только что проверяли.
 
 Прямой push в ${base} запрещён — только через pull request.
 ${RULES}

@@ -10,6 +10,7 @@
 |---|---|---|
 | 1 | Восемь хуков: секреты, git, границы репозитория, недоверенный текст, гейт качества | `.claude/hooks/`, описание — [docs/HOOKS.md](docs/HOOKS.md) |
 | 2 | Workflow `/feature`: план → ревью тремя агентами → реализация → ревью результата → MR → CI | `.claude/workflows/feature.js`, описание — [docs/WORKFLOW.md](docs/WORKFLOW.md) |
+| 4 | Внешний ревьюер: `codex exec` другого вендора, read-only, вердикт по схеме | `scripts/review_codex.py`, схема — `.claude/schemas/review.json` |
 | 3 | CI: поиск секретов, поиск скрытых инструкций, проверка самих хуков | `.github/workflows/ci.yml` |
 
 ## Как проверить, что обвязка жива
@@ -18,6 +19,7 @@
 python3 scripts/test_hooks.py        # 27 проверок хуков
 python3 scripts/ci/scan_secrets.py   # секреты в отслеживаемых файлах
 python3 scripts/scan_untrusted.py .  # скрытые инструкции в текстах
+python3 scripts/review_codex.py "…"  # внешний ревьюер, если нужен разовый разбор
 ```
 
 Все три запускаются в CI на каждый push и pull request.

@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "revise", "block", "unavailable"],
+      "description": "approve — дефектов не нашёл; revise — есть что поправить; block — так отдавать нельзя; unavailable — ревьюер не отработал"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Одним абзацем: что проверено и к чему пришли"
+    },
+    "findings": {
+      "type": "array",
+      "description": "Найденные дефекты. Пустой массив, если ничего не нашли",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "title", "detail", "file", "suggestion"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "file": {
+            "type": ["string", "null"],
+            "description": "Файл, к которому относится находка, либо null"
+          },
+          "suggestion": {
+            "type": ["string", "null"],
+            "description": "Что предлагается сделать, либо null"
+          }
+        }
+      }
+    }
+  }
+}
