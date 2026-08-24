@@ -14,16 +14,23 @@
     },
     "findings": {
       "type": "array",
+      "description": "Найденные дефекты. Пустой массив, если ничего не нашли",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["severity", "title", "detail"],
+        "required": ["severity", "title", "detail", "file", "suggestion"],
         "properties": {
           "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
           "title": { "type": "string" },
           "detail": { "type": "string" },
-          "file": { "type": "string" },
-          "suggestion": { "type": "string" }
+          "file": {
+            "type": ["string", "null"],
+            "description": "Файл, к которому относится находка, либо null"
+          },
+          "suggestion": {
+            "type": ["string", "null"],
+            "description": "Что предлагается сделать, либо null"
+          }
         }
       }
     }

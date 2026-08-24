@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
+from _paths import normalize
 
 HOME = re.escape(os.path.expanduser("~"))
 
@@ -32,7 +33,9 @@ SECRETS = [
     (r"recovery[-_]?codes", "коды восстановления"),
     (r"(?:^|/)(?:secrets?|credentials)\.(?:json|ya?ml|txt|env|php|ini)\b", "файл с секретами"),
     (r"\bsecurity\s+find-(?:generic|internet)-password\b", "связка ключей macOS"),
-    (r"\bsudo\b", "повышение прав (sudo)"),
+    # Раньше шаблон ловил любое упоминание слова и блокировал безобидное
+    # `rg sudo README.md`. Теперь sudo должен стоять в позиции команды.
+    (r"(?:^|[;&|]\s*|\$\(\s*|`\s*)sudo\s", "повышение прав (sudo)"),
 ]
 
 def main():
@@ -41,8 +44,11 @@ def main():
     for text in H.targets(data):
         if H.allowed(text):
             continue
+        # Сравнивается развёрнутая строка: $HOME/.aws/credentials и ~/.aws/credentials
+        # это один и тот же файл, и различать их — значит защищать только один.
+        haystack = normalize(text)
         for pattern, human in SECRETS:
-            if re.search(pattern, text, re.I):
+            if re.search(pattern, haystack, re.I):
                 H.decide(
                     "deny",
                     "Заблокировано хуком guard-secrets: попытка обратиться к «%s».\n"
