@@ -1,0 +1,32 @@
+# Окружение и секреты — здесь их быть не должно ни при каких условиях
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+.npmrc
+.netrc
+
+# Рабочее состояние агентской обвязки
+.claude/logs/
+.claude/state/
+
+# Зависимости и сборка
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+coverage/
+.phpunit.result.cache
+
+# Системное
+.DS_Store
+*.swp
+.idea/
+.vscode/
