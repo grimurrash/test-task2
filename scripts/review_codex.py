@@ -39,6 +39,27 @@ PREAMBLE = """Ты внешний ревьюер. Код писал не ты, �
 Задание:
 """
 
+def dump_trace(stdout, stderr):
+    """Кладёт вывод оборвавшегося прогона в журнал и возвращает путь."""
+    text = ((stdout or "") + "\n----- stderr -----\n" + (stderr or "")).strip()
+    if not text:
+        return ""
+    path = os.path.join(ROOT, ".claude", "logs", "codex-review.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        return ""
+    return path
+
+def last_meaningful_line(stdout, stderr):
+    for stream in (stdout, stderr):
+        lines = [ln.strip() for ln in (stream or "").splitlines() if ln.strip()]
+        if lines:
+            return lines[-1][:200]
+    return ""
+
 def unavailable(reason, exit_code=3):
     json.dump({"verdict": "unavailable", "summary": reason, "findings": []},
               sys.stdout, ensure_ascii=False, indent=1)
@@ -93,9 +114,14 @@ def main():
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         os.unlink(out_path)
-        return unavailable("ревьюер не уложился в %d с" % args.timeout)
+        # Молчаливый таймаут не диагностируется. Сохраняем то, что ревьюер успел
+        # сказать: по хвосту видно, застрял он на чтении, на команде или на ответе.
+        trace = dump_trace(exc.stdout, exc.stderr)
+        tail = last_meaningful_line(exc.stdout, exc.stderr)
+        return unavailable("ревьюер не уложился в %d с. Последнее, что делал: %s. Полный след: %s"
+                           % (args.timeout, tail or "нечего показать", trace or "не сохранён"))
 
     try:
         with open(out_path, encoding="utf-8") as fh:
