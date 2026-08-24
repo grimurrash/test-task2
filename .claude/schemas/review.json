@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "revise", "block", "unavailable"],
+      "description": "approve — дефектов не нашёл; revise — есть что поправить; block — так отдавать нельзя; unavailable — ревьюер не отработал"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Одним абзацем: что проверено и к чему пришли"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "title", "detail"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "file": { "type": "string" },
+          "suggestion": { "type": "string" }
+        }
+      }
+    }
+  }
+}

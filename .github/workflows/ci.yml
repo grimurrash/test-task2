@@ -33,6 +33,9 @@ jobs:
       - name: Хуки работают так, как заявлено
         run: python3 scripts/test_hooks.py
 
+      - name: Внешний ревьюер деградирует предсказуемо
+        run: python3 scripts/test_review_codex.py
+
   quality:
     name: Качество — тесты и анализаторы
     runs-on: ubuntu-latest
