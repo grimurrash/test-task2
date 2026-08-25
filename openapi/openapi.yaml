@@ -320,7 +320,7 @@ paths:
                       code: invalid_merchant_id
                       message: >-
                         X-Merchant-Id должен быть непустой строкой до 64 символов
-                        из набора A–Z a–z 0–9 . _ -
+                        из набора A–Z a–z 0–9 . _ - и присылаться ровно один раз
                 malformed_request:
                   summary: Тело не разобрано как JSON-объект
                   value:
@@ -628,7 +628,7 @@ components:
                   code: invalid_merchant_id
                   message: >-
                     X-Merchant-Id должен быть непустой строкой до 64 символов
-                    из набора A–Z a–z 0–9 . _ -
+                    из набора A–Z a–z 0–9 . _ - и присылаться ровно один раз
     PaymentNotFound:
       description: >-
         Платёж не существует или принадлежит другому мерчанту — эти случаи
