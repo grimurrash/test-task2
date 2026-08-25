@@ -37,6 +37,27 @@ PROTECTED = [
     (r"scripts/unlock\.sh$", "выдача пропусков"),
 ]
 
+# Те же файлы, но упомянутые внутри команды. Путь может стоять в кавычках,
+# внутри встроенного кода, сразу после скобки — якоря «начало строки или слэш»
+# там не работают: python3 -c "open('CLAUDE.md','w')" прошёл мимо проверки,
+# потому что в токене не было ни одного слэша.
+MENTION = [
+    (r"\.claude/settings\.json", "настройки проекта и список хуков"),
+    (r"\.claude/hooks/", "сами хуки"),
+    (r"\.claude/guard-allow\.txt", "список исключений из запретов"),
+    (r"\.claude/state/unlock\.json", "выданные пропуски"),
+    (r"\.github/workflows/", "конфигурация CI"),
+    (r"(?:^|[^\w.\-/])CLAUDE\.md(?![\w.\-])", "правила проекта"),
+    (r"scripts/unlock\.sh", "выдача пропусков"),
+]
+
+# Запуск скрипта выдачи пропусков — именно запуск, а не упоминание. Первая
+# версия ловила имя в любом месте команды и блокировала даже коммит, в тексте
+# которого это имя встречалось. Механизм, дающий ложные тревоги, обходят так же
+# охотно, как дырявый.
+RUN_UNLOCK = re.compile(
+    r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b")
+
 ZONE = "protected-files"
 
 def protected_hit(text, root):
@@ -69,7 +90,7 @@ def main():
         # Пропуск себе не выдают. Запуск scripts/unlock.sh из сессии агента
         # запрещён всегда — в том числе при открытой зоне, иначе агент продлевал
         # бы себе разрешение сам, и весь механизм сводился бы к одной команде.
-        if re.search(r"unlock\.sh\b", normalized):
+        if RUN_UNLOCK.search(normalized):
             H.decide(
                 "deny",
                 "Заблокировано хуком guard-protected-files: выдача пропуска из сессии агента.\n"
@@ -82,9 +103,21 @@ def main():
         if not (WRITE_INTENT.search(normalized) or INLINE_CODE.search(normalized)):
             H.ok()
 
-        for candidate in list(path_candidates(cmd)) + [normalized]:
+        for candidate in path_candidates(cmd):
             human = protected_hit(candidate, root)
             if human:
+                H.confirm(
+                    ZONE,
+                    "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
+                    "Команда: %s" % (human, cmd[:300]),
+                    guard="guard-protected-files",
+                )
+
+        # Путь мог не выделиться в отдельный аргумент — он бывает внутри кавычек
+        # встроенного кода. Здесь ищем упоминание по всей команде, но только когда
+        # намерение записи уже установлено выше.
+        for pattern, human in MENTION:
+            if re.search(pattern, normalized):
                 H.confirm(
                     ZONE,
                     "Заблокировано хуком guard-protected-files: команда правит «%s».\n"

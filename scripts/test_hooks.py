@@ -105,6 +105,12 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "rm ./docs/../.claude/hooks/guard-scope.py"}}, "deny"),
     ("guard-protected-files.py", "выдача пропуска из сессии агента",
      {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh protected-files 60 'надо'"}}, "deny"),
+    ("guard-protected-files.py", "упоминание скрипта пропусков — не запуск",
+     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'разрешение выдаёт scripts/unlock.sh'"}}, "allow"),
+    ("guard-protected-files.py", "команда запуска в тексте сообщения — не запуск",
+     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'запускается как bash scripts/unlock.sh git-branch 15'"}}, "allow"),
+    ("guard-protected-files.py", "запуск после разделителя ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "cd /tmp && bash scripts/unlock.sh protected-files 60"}}, "deny"),
     ("guard-protected-files.py", "чтение защищённого файла разрешено",
      {"tool_name": "Bash", "tool_input": {"command": "cat .claude/settings.json"}}, "allow"),
     ("guard-protected-files.py", "прогон тестов не считается правкой",
@@ -140,6 +146,18 @@ def decision_of(proc):
 def main():
     failures = 0
     print("Проверка хуков. Корень проекта: %s\n" % ROOT)
+
+    # Прогон не должен зависеть от того, открыта ли сейчас зона: кейсы «без
+    # пропуска» при действующем пропуске получили бы allow и покраснели на ровном
+    # месте. Пропуск снимается на время проверки и возвращается в конце — чужое
+    # разрешение тест не тратит и раньше срока не гасит.
+    unlock_path = os.path.join(ROOT, ".claude", "state", "unlock.json")
+    log_path = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
+    saved_unlock = None
+    if os.path.exists(unlock_path):
+        with open(unlock_path, encoding="utf-8") as fh:
+            saved_unlock = fh.read()
+        os.remove(unlock_path)
     current = None
     for hook, title, payload, expected in CASES:
         if hook != current:
@@ -157,13 +175,6 @@ def main():
     # Пропуск: разрешение выдаётся заранее, привязано к зоне и сгорает по времени.
     # Проверяется не только что он открывает, но и что он НЕ открывает.
     print("\n  пропуск с истечением")
-    unlock_path = os.path.join(ROOT, ".claude", "state", "unlock.json")
-    log_path = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
-    saved_unlock = None
-    if os.path.exists(unlock_path):
-        with open(unlock_path, encoding="utf-8") as fh:
-            saved_unlock = fh.read()
-
     now = time.time()
     live = {"until": now + 600, "human_until": "тест", "reason": "проверка"}
     stale = {"until": now - 600, "human_until": "тест", "reason": "проверка"}
@@ -204,12 +215,8 @@ def main():
     failures += 0 if ok else 1
     print("    %s использование пропуска записано в журнал" % ("✓" if ok else "✗"))
 
-    if saved_unlock is None:
-        if os.path.exists(unlock_path):
-            os.remove(unlock_path)
-    else:
-        with open(unlock_path, "w", encoding="utf-8") as fh:
-            fh.write(saved_unlock)
+    if os.path.exists(unlock_path):
+        os.remove(unlock_path)
 
     print("\n  scan-untrusted.py")
     proc = run("scan-untrusted.py", INJECTION_CASE)
@@ -298,6 +305,12 @@ def main():
     else:
         with open(state_path, "w", encoding="utf-8") as fh:
             fh.write(saved)
+
+    # Пропуск сэра возвращается таким, каким был до прогона.
+    if saved_unlock is not None:
+        os.makedirs(os.path.dirname(unlock_path), exist_ok=True)
+        with open(unlock_path, "w", encoding="utf-8") as fh:
+            fh.write(saved_unlock)
 
     print("\n%s" % ("ВСЁ ЗЕЛЁНОЕ" if failures == 0 else "ПРОВАЛОВ: %d" % failures))
     return 1 if failures else 0
