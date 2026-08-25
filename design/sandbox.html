@@ -191,7 +191,7 @@ select.control {
 .code-badge--201 { color: var(--color-created); background: var(--color-created-bg); }
 .code-badge--200 { color: var(--color-repeat); background: var(--color-repeat-bg); }
 .code-badge--409 { color: var(--color-conflict); background: var(--color-conflict-bg); }
-.code-badge--400 { color: var(--color-error); background: var(--color-error-bg); }
+.code-badge--422 { color: var(--color-error); background: var(--color-error-bg); }
 .code-badge--none { color: var(--color-network); background: var(--color-surface); border: 1px dashed var(--color-network-border); }
 
 .verdict {
@@ -217,7 +217,7 @@ select.control {
 .key-a::before { color: #7b5cd6; }
 .key-b::before { color: #0e8a7d; }
 .chip--errcode { color: var(--color-conflict); background: var(--color-conflict-bg); border-color: var(--color-conflict-border); }
-.chip--errcode-400 { color: var(--color-error); background: var(--color-error-bg); border-color: var(--color-error-border); }
+.chip--errcode-422 { color: var(--color-error); background: var(--color-error-bg); border-color: var(--color-error-border); }
 
 .payload {
   margin-top: var(--space-3); padding: var(--space-3);
@@ -327,7 +327,7 @@ select.control {
       <div class="field">
         <label for="amount">Сумма, минорные единицы (amount_minor)</label>
         <input class="control control--error mono" id="amount" value="0">
-        <p class="error-text">Целое число больше нуля. Ответ сервера — 400 invalid_amount, запись C6 в журнале.</p>
+        <p class="error-text">Целое число больше нуля. Ответ сервера — 422 validation_failed, запись C6 в журнале.</p>
         <p class="sub">Тестовые суммы: копейки <span class="mono">01</span> → failed,
         <span class="mono">02</span> → succeeded, прочее → pending.</p>
       </div>
@@ -396,18 +396,19 @@ select.control {
       <div class="card-title">Журнал обмена</div>
       <div class="timeline">
 
-      <!-- C6 · 400 валидация -->
+      <!-- C6 · 422 валидация тела (контракт #9: вся валидация тела — validation_failed) -->
       <article class="entry entry--error">
         <span class="marker">C6</span>
         <div class="entry-head">
           <time>14:07:52</time><span class="method">POST</span><span class="path">/v1/payments</span>
-          <span class="code-badge code-badge--400">400</span>
+          <span class="code-badge code-badge--422">422</span>
         </div>
         <div class="entry-body">
-          <span class="chip chip--errcode-400">invalid_amount</span>
-          <span>amount_minor должен быть целым числом больше нуля.</span>
+          <span class="chip chip--errcode-422">validation_failed</span>
+          <span>amount_minor — целое строго больше нуля.</span>
         </div>
-        <p class="note">Поле «Сумма» в форме — в состоянии ошибки с тем же текстом.</p>
+        <p class="note">Все нарушения приходят разом в details.errors («поле → нарушение»);
+        поле «Сумма» в форме — в состоянии ошибки с тем же текстом.</p>
       </article>
 
       <!-- C7 · ошибка сети -->

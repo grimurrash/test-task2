@@ -156,6 +156,7 @@ th { font-size: var(--font-size-overline); text-transform: uppercase;
 .pill--201 { color: var(--color-created); background: var(--color-created-bg); }
 .pill--200 { color: var(--color-repeat); background: var(--color-repeat-bg); }
 .pill--400 { color: var(--color-error); background: var(--color-error-bg); }
+.pill--422 { color: var(--color-error); background: var(--color-error-bg); }
 .pill--409 { color: var(--color-conflict); background: var(--color-conflict-bg); }
 .pill--404 { color: var(--color-network); background: var(--color-network-bg); }
 .pill--succeeded { color: var(--color-status-succeeded); background: var(--color-status-succeeded-bg); }
@@ -303,7 +304,7 @@ th { font-size: var(--font-size-overline); text-transform: uppercase;
         <table>
           <tr><th>Заголовок</th><th></th><th>Описание</th></tr>
           <tr><td><code>Idempotency-Key</code></td><td><span class="req">обязателен</span></td>
-              <td>Ключ идемпотентности, до 128 символов. TTL — 24 часа</td></tr>
+              <td>Ключ идемпотентности: непустая строка 1–255 символов. TTL — 24 часа</td></tr>
           <tr><td><code>X-Merchant-Id</code></td><td><span class="req">обязателен</span></td>
               <td>Идентификатор мерчанта: 1–64 символа из набора <code>[A-Za-z0-9._-]</code></td></tr>
         </table>
@@ -316,11 +317,13 @@ th { font-size: var(--font-size-overline); text-transform: uppercase;
           <tr><td><span class="status-pill pill--200">200</span></td>
               <td>Повтор: возвращён существующий платёж, тот же <code>id</code></td></tr>
           <tr><td><span class="status-pill pill--400">400</span></td>
-              <td><code>idempotency_key_required</code> · <code>merchant_id_required</code> ·
-                  <code>invalid_merchant_id</code> · <code>invalid_amount</code> ·
-                  <code>invalid_currency</code></td></tr>
+              <td>Заголовки: <code>idempotency_key_required</code> ·
+                  <code>merchant_id_required</code> · <code>invalid_merchant_id</code></td></tr>
           <tr><td><span class="status-pill pill--409">409</span></td>
               <td><code>idempotency_key_reuse</code> · <code>request_in_progress</code></td></tr>
+          <tr><td><span class="status-pill pill--422">422</span></td>
+              <td>Тело: <code>validation_failed</code> — все нарушения разом
+                  в <code>details.errors</code></td></tr>
         </table>
         </div>
         <p class="legend">Образец оформления: остальные три эндпоинта собираются Scalar-ом
@@ -329,19 +332,23 @@ th { font-size: var(--font-size-overline); text-transform: uppercase;
 
       <section class="section">
         <h2>Коды ошибок</h2>
-        <p>Формат единый: <code>{"error": {"code", "message", "details"}}</code>.</p>
+        <p>Формат единый: <code>{"error": {"code", "message", "details"}}</code>.
+        Разделение статусов — по RFC 9110: <strong>400</strong> — проблема заголовков
+        запроса, <strong>422</strong> — тело разобрано, но поля не прошли проверку;
+        вся валидация тела отвечает одним кодом <code>validation_failed</code>,
+        карта «поле → нарушение» со всеми нарушениями разом — в
+        <code>details.errors</code>.</p>
         <div class="table-wrap">
         <table>
           <tr><th>HTTP</th><th>code</th><th>Когда</th></tr>
-          <tr><td><span class="status-pill pill--400">400</span></td><td><code>idempotency_key_required</code></td><td>Нет заголовка <code>Idempotency-Key</code></td></tr>
+          <tr><td><span class="status-pill pill--400">400</span></td><td><code>idempotency_key_required</code></td><td>Создание платежа без заголовка <code>Idempotency-Key</code> (или он пуст)</td></tr>
           <tr><td><span class="status-pill pill--400">400</span></td><td><code>merchant_id_required</code></td><td>Нет заголовка <code>X-Merchant-Id</code></td></tr>
           <tr><td><span class="status-pill pill--400">400</span></td><td><code>invalid_merchant_id</code></td><td><code>X-Merchant-Id</code> пуст, длиннее 64 символов или с недопустимыми символами</td></tr>
-          <tr><td><span class="status-pill pill--400">400</span></td><td><code>invalid_amount</code></td><td><code>amount_minor</code> не целое или не больше нуля</td></tr>
-          <tr><td><span class="status-pill pill--400">400</span></td><td><code>invalid_currency</code></td><td>Валюта вне списка <code>RUB | USD | EUR</code> (регистр строгий)</td></tr>
+          <tr><td><span class="status-pill pill--422">422</span></td><td><code>validation_failed</code></td><td>Поля тела не прошли проверку: <code>amount_minor</code>, <code>currency</code>, <code>order_id</code>, <code>description</code> — все нарушения в <code>details.errors</code></td></tr>
           <tr><td><span class="status-pill pill--409">409</span></td><td><code>idempotency_key_reuse</code></td><td>Тот же ключ, другое тело</td></tr>
           <tr><td><span class="status-pill pill--409">409</span></td><td><code>request_in_progress</code></td><td>Запрос с этим ключом ещё выполняется</td></tr>
           <tr><td><span class="status-pill pill--409">409</span></td><td><code>payment_not_cancelable</code></td><td>Отмена платежа в статусе <code>succeeded</code> или <code>failed</code></td></tr>
-          <tr><td><span class="status-pill pill--404">404</span></td><td><code>payment_not_found</code></td><td>Платёж не существует или принадлежит другому мерчанту</td></tr>
+          <tr><td><span class="status-pill pill--404">404</span></td><td><code>payment_not_found</code></td><td>Платёж не существует или принадлежит другому мерчанту — чужой ресурс не раскрывается</td></tr>
         </table>
         </div>
       </section>
