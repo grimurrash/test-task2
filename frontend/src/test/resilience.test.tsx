@@ -23,11 +23,11 @@ describe('formatAmount никогда не бросает', () => {
 })
 
 describe('граница ошибки: падает блок, не страница', () => {
-  it('карточка с бросающим рендером заменяется заглушкой, соседи живы', () => {
+  it('карточка с бросающим рендером заменяется заглушкой, соседи живы, причина уходит в консоль', () => {
     const Bomb = () => {
       throw new Error('boom')
     }
-    vi.spyOn(console, 'error').mockImplementation(() => {}) // React логирует пойманное
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     render(
       <>
         <CardBoundary label="Блок A">
@@ -40,6 +40,10 @@ describe('граница ошибки: падает блок, не страни�
     )
     expect(screen.getByText(/Блок A не отобразился: boom/)).toBeInTheDocument()
     expect(screen.getByText('сосед жив')).toBeInTheDocument()
+    // тихий отказ не совсем тихий: явная запись причины со стеком компонента
+    expect(
+      consoleSpy.mock.calls.some((args) => String(args[0]).includes('«Блок A» не отобразился')),
+    ).toBe(true)
   })
 
   it('платёж с суммой 1e21 рендерится как есть и не роняет список', () => {
