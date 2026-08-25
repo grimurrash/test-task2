@@ -154,18 +154,76 @@ def main():
 
     print("\n  mark-verify.py")
     state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
-    before = os.path.exists(state_path)
-    run("mark-verify.py", {"tool_name": "Bash",
-                           "tool_input": {"command": "python3 -m pytest tests/"},
-                           "tool_response": {"stdout": "5 passed", "is_error": False}})
-    ok = os.path.exists(state_path)
-    if ok:
+    saved = None
+    if os.path.exists(state_path):
         with open(state_path, encoding="utf-8") as fh:
-            ok = "tests" in json.load(fh)
-    failures += 0 if ok else 1
-    print("    %s прогон тестов зафиксирован в .claude/state/verify.json" % ("✓" if ok else "✗"))
-    if not before and os.path.exists(state_path):
-        os.remove(state_path)
+            saved = fh.read()
+
+    # Каждая команда проверяется на чистом состоянии: иначе запись, сделанную
+    # предыдущей командой, легко принять за успех текущей.
+    #
+    # Вторая и третья строки — регрессия на дефект от 2026-08-24: собственные
+    # тесты репозитория не опознавались как тесты, gate-quality не видел ни одного
+    # прогона и блокировал завершение любой сессии, где правился код.
+    verify_cases = [
+        ("прогон pytest зафиксирован", "python3 -m pytest tests/"),
+        ("прогон собственных тестов репозитория зафиксирован", "python3 scripts/test_hooks.py"),
+        ("прогон unittest зафиксирован", "python3 -m unittest discover -s tests"),
+    ]
+    for title, cmd in verify_cases:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+        run("mark-verify.py", {"tool_name": "Bash",
+                               "tool_input": {"command": cmd},
+                               "tool_response": {"stdout": "OK", "is_error": False}})
+        ok = os.path.exists(state_path)
+        if ok:
+            with open(state_path, encoding="utf-8") as fh:
+                ok = "tests" in json.load(fh)
+        failures += 0 if ok else 1
+        print("    %s %s" % ("✓" if ok else "✗", title))
+
+    # Детектор красноты. Регрессия на второй дефект того же дня: шаблон искал
+    # «failed» без учёта регистра и метил зелёный прогон красным, если в выводе
+    # печаталось поле failed=False. Гейт после этого сообщал о красных тестах,
+    # которых не было, — а ложная тревога обесценивает механизм не меньше пропуска.
+    redness_cases = [
+        ("зелёный прогон не помечен красным",
+         {"stdout": "ВСЁ ЗЕЛЁНОЕ\ntests: 18:34 (failed=False)", "is_error": False}, False),
+        ("слово из заголовка теста не считается провалом",
+         {"stdout": "  ✓ маркер провала распознан\nВСЁ ЗЕЛЁНОЕ", "is_error": False}, False),
+        ("печать собственного состояния не считается провалом",
+         {"stdout": "tests  2026-08-24 19:21:30  failed = True", "is_error": False}, False),
+        ("сводка прогонщика о провале распознана",
+         {"stdout": "=== 1 failed, 4 passed in 0.31s ===", "is_error": False}, True),
+        ("провал go test распознан",
+         {"stdout": "--- FAIL: TestIdempotency (0.00s)", "is_error": False}, True),
+        ("ненулевой код возврата важнее любого текста",
+         {"stdout": "всё хорошо", "is_error": True}, True),
+    ]
+    for title, response, expected in redness_cases:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+        run("mark-verify.py", {"tool_name": "Bash",
+                               "tool_input": {"command": "python3 -m pytest tests/"},
+                               "tool_response": response})
+        got = None
+        if os.path.exists(state_path):
+            with open(state_path, encoding="utf-8") as fh:
+                got = json.load(fh).get("tests", {}).get("failed")
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-48s ожидали failed=%-5s получили %s"
+              % ("✓" if ok else "✗", title, expected, got))
+
+    # Состояние возвращается таким, каким было до проверки: тест не имеет права
+    # оставлять после себя отметку о прогоне, которого не было.
+    if saved is None:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+    else:
+        with open(state_path, "w", encoding="utf-8") as fh:
+            fh.write(saved)
 
     print("\n%s" % ("ВСЁ ЗЕЛЁНОЕ" if failures == 0 else "ПРОВАЛОВ: %d" % failures))
     return 1 if failures else 0
