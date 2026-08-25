@@ -24,6 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
+from _paths import strip_heredocs
 
 PROTECTED = r"(?:master|main|develop|release/[\w.\-/]+)"
 PROTECTED_NAME = re.compile(r"^" + PROTECTED + r"$")
@@ -45,27 +46,6 @@ CMD_POS = r"(?:^\s*|[;&|\n]\s*)"
 # Понимает одиночный `<<DELIM` / `<<-DELIM` / `<<'DELIM'` / `<<"DELIM"` на
 # строку. Несколько heredoc-документов в одной команде и вложенные heredoc —
 # не разбирает; в таком случае текст просто не вырезается, как и раньше.
-HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-
-def strip_heredocs(cmd):
-    if "<<" not in cmd:
-        return cmd
-    lines = cmd.split("\n")
-    out = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        m = HEREDOC_OPEN.search(line)
-        i += 1
-        if not m:
-            continue
-        delim = m.group(2)
-        while i < len(lines) and lines[i].strip() != delim:
-            i += 1
-        i += 1  # пропустить и строку с самим delim, если она нашлась
-    return "\n".join(out)
-
 DENY = [
     (r"\bgit\s+push\b[^|;&]*\s(?:--force\b|-f\b)(?![\w-])", "force-push"),
     (r"\bgit\s+push\b[^|;&]*--force-with-lease\b[^|;&]*\s" + PROTECTED, "force-with-lease в защищённую ветку"),
