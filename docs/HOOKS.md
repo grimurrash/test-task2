@@ -61,7 +61,12 @@ bash scripts/unlock.sh --revoke protected-files
 | `git-branch` | создание веток вне соглашения |
 | `git-push-main` | прямой push в `main`, `master`, `develop` |
 | `git-history` | `git reset --hard`, `git clean -f` |
-| `git-worktree` | `git worktree add` и `remove` |
+| `git-worktree` | создание и удаление рабочих копий |
+
+Рабочие копии создаются **внутри репозитория**, в `.worktrees/`: путь наружу
+отклоняет `guard-scope`, у которого пропусков нет по замыслу — граница «наружу
+не писать» не должна открываться ради удобства. Папка в `.gitignore`, сканер
+недоверенного текста её пропускает.
 
 Три свойства, без которых это было бы украшением:
 

@@ -49,6 +49,8 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "git checkout -b feature/payments"}}, "allow"),
     ("guard-git.py", "ветка вне соглашения без пропуска",
      {"tool_name": "Bash", "tool_input": {"command": "git checkout -b hotfix-temp"}}, "deny"),
+    ("guard-git.py", "рабочая копия без пропуска не создаётся",
+     {"tool_name": "Bash", "tool_input": {"command": "git worktree add .worktrees/psp-contract -b feature/contract-openapi"}}, "deny"),
     ("guard-git.py", "push в рабочую ветку разрешён",
      {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/payments"}}, "allow"),
     ("guard-git.py", "обычный коммит разрешён",
@@ -86,6 +88,13 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(int(3600//60))\" > docs/out.txt"}}, "allow"),
     ("guard-scope.py", "соседняя папка с числовым именем по-прежнему защищена",
      {"tool_name": "Bash", "tool_input": {"command": "rm -rf ../1"}}, "deny"),
+    # Рабочие копии ролей лежат внутри репозитория: снаружи их создание упирается
+    # в запрет записи за пределы проекта, а ослаблять эту границу ради удобства
+    # дороже, чем держать копии у себя.
+    ("guard-scope.py", "рабочая копия внутри репозитория разрешена",
+     {"tool_name": "Bash", "tool_input": {"command": "git worktree add .worktrees/psp-contract -b feature/contract-openapi"}}, "allow"),
+    ("guard-scope.py", "рабочая копия за пределами репозитория отклоняется",
+     {"tool_name": "Bash", "tool_input": {"command": "git worktree add ../psp-contract -b feature/contract-openapi"}}, "deny"),
     ("guard-scope.py", "чтение снаружи по-прежнему разрешено",
      {"tool_name": "Bash", "tool_input": {"command": "cat ../README.md"}}, "allow"),
     ("guard-scope.py", "работа внутри репозитория не мешается",

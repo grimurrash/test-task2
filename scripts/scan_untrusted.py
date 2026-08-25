@@ -60,7 +60,11 @@ COMPILED = [(re.compile(p, re.I), h) for p, h in PHRASES]
 # Пропуск объявляется вслух в выводе — тихая фильтрация превращает отчёт в ложь.
 SELF_FILES = {"scan_untrusted.py", "test_hooks.py"}
 
-SKIP_DIRS = {".git", "node_modules", "vendor", ".venv", "venv", "dist", "build", "__pycache__", ".claude/logs"}
+# .worktrees — рабочие копии ролей. Внутри каждой лежит полная копия репозитория,
+# включая файлы с намеренными образцами инъекций; без пропуска сканер находил бы
+# их снова и снова и возвращал ненулевой код на здоровом дереве.
+SKIP_DIRS = {".git", ".worktrees", "node_modules", "vendor", ".venv", "venv",
+             "dist", "build", "__pycache__", ".claude/logs"}
 TEXT_EXT = {".md", ".txt", ".json", ".yml", ".yaml", ".html", ".htm", ".csv", ".xml",
             ".js", ".ts", ".py", ".php", ".go", ".sh", ".toml", ".ini", ".cfg", ".sql"}
 

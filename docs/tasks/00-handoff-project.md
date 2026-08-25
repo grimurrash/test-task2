@@ -151,16 +151,30 @@ python3 scripts/scan_untrusted.py /tmp/issue.txt
 
 - **Ветка на роль.** `feature/backend-api`, `feature/frontend-sandbox`,
   `feature/docs-openapi`. В `main` — только через pull request, прямой push
-  переспрашивает хук `guard-git`.
-- **Бэкенд, фронт и доки идут в отдельных worktree** — это отдельный пункт задания
-  и одновременно бонусный пункт курса:
+  блокирует хук `guard-git`.
+- **Каждая роль работает в своей копии** — это бонусный пункт курса и одновременно
+  необходимость: 25 августа две сессии разделили один HEAD, и коммит ушёл в `main`
+  в обход pull request.
+
+  **Копии живут внутри репозитория, в `.worktrees/`**, а не рядом с ним. Путь
+  наружу отклоняет `guard-scope`, и ослаблять эту границу ради удобства дороже,
+  чем держать копии у себя. Папка в `.gitignore`, сканер её пропускает.
+
   ```bash
-  git worktree add ../psp-backend  -b feature/backend-api
-  git worktree add ../psp-frontend -b feature/frontend-sandbox
-  git worktree add ../psp-docs     -b feature/docs-openapi
+  git worktree add .worktrees/psp-backend  -b feature/backend-api
+  git worktree add .worktrees/psp-frontend -b feature/frontend-sandbox
+  git worktree add .worktrees/psp-docs     -b feature/docs-openapi
   git worktree list
   ```
-  Убирать за собой сразу после merge: `git worktree remove <путь> && git worktree prune`.
+
+  Операция закрыта хуком; зону открывает сэр в своём терминале:
+  `bash scripts/unlock.sh git-worktree 15 "worktree ролей"`. Из сессии агента
+  пропуск выдать нельзя.
+
+  Убирать за собой сразу после слияния: удалить копию и почистить ссылки —
+  `git worktree remove .worktrees/psp-backend`, затем `git worktree prune`.
+  Три рабочие копии это три полных дерева файлов; в эфире курса прозвучал случай,
+  когда так накопилось 250 ГБ и работа встала.
 - **Роль не читает чужие сессии.** Вопрос — либо в задании, либо прямым сообщением
   между сессиями (соседние сессии видны через `ListAgents`).
 - **Каждая роль ведёт `sessions/<роль>.md`**: дословные промпты и принятые решения.
