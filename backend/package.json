@@ -1,0 +1,29 @@
+{
+  "name": "psp-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Идемпотентный платёжный сервис — API по openapi/openapi.yaml",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:all": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "test": "npm run build:all && node --test \"dist/test/**/*.test.js\"",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@types/node": "^22.15.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^9.34.0",
+    "globals": "^15.15.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0",
+    "yaml": "^2.8.1"
+  }
+}

@@ -20,6 +20,12 @@ issue #24, смежная находка: `.git` внутри linked worktree �
 а не общий с другими копиями. Если бы гейт всегда смотрел на основную копию,
 сессия, работающая в `.worktrees/<роль>`, получила бы проверку чужого
 рабочего дерева — состояние worktree осталось бы вне поля зрения полностью.
+
+issue #33, найдено при работе над #24: verify.json при этом читался
+из `root` (каталог работы), а пишет его `mark-verify.py` по
+`CLAUDE_PROJECT_DIR` — эти два не обязаны совпадать. Верify.json теперь
+читается оттуда же, откуда пишется, и по ключу `session_id`: чужой прогон
+тестов (другая параллельная роль) в свою запись больше не попадает.
 """
 import hashlib
 import json
@@ -69,6 +75,7 @@ def main():
     if not os.path.exists(os.path.join(root, ".git")):
         sys.exit(0)
 
+    session_id = data.get("session_id") or "unknown"
     problems = []
 
     dirty = git(root, "status", "--porcelain")
@@ -76,15 +83,19 @@ def main():
         count = len([ln for ln in dirty.splitlines() if ln.strip()])
         problems.append("незакоммиченных изменений: %d (git status --porcelain непустой)" % count)
 
+    # verify.json пишется по H.project_dir() (mark-verify.py), не по `root`
+    # этого хука — читаем оттуда же, а не оттуда, где реально идёт работа.
     state = {}
     try:
-        with open(os.path.join(root, ".claude", "state", "verify.json"), encoding="utf-8") as fh:
+        with open(os.path.join(H.project_dir(), ".claude", "state", "verify.json"),
+                  encoding="utf-8") as fh:
             state = json.load(fh)
     except Exception:
         pass
+    session_state = state.get("sessions", {}).get(session_id, {})
 
     code_ts = newest_source_mtime(root)
-    tests = state.get("tests")
+    tests = session_state.get("tests")
     if code_ts > 0:
         if not tests:
             problems.append("тесты в этой сессии не запускались ни разу")
@@ -93,7 +104,7 @@ def main():
         elif tests.get("failed"):
             problems.append("последний прогон тестов был красным: %s" % tests.get("command"))
 
-    static = state.get("static")
+    static = session_state.get("static")
     if static and static.get("failed"):
         problems.append("последний прогон анализаторов был красным: %s" % static.get("command"))
 
