@@ -191,10 +191,12 @@ curl -i -X POST "$API/v1/payments" \
 а не 400 — он здесь для того, чтобы очертить границу отказа:
 
 ```bash
+# ключ экзотический, но каждый раз новый: повтор прежнего вернул бы 200
+# и тот же платёж — это идемпотентность, а не отказ по набору символов
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
-  -H "Idempotency-Key: заказ-2026/08/25 #1" \
+  -H "Idempotency-Key: заказ-№1/$(uuidgen)" \
   -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0006"}'
 ```
 

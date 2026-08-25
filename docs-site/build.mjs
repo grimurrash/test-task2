@@ -83,6 +83,23 @@ function checkContract(spec, raw) {
   return { operations, codes }
 }
 
+// Страница отдаёт контракт как есть, а адрес стенда подставляет только в свой
+// рендер и в примеры. Значит на нестандартном порту скачанный `openapi.yaml`
+// говорит про 8080 — и тот, кто утащит его в Postman или в генератор клиента,
+// повторит ровно ту ошибку «работает, но не то», ради которой заводилась #85.
+// Предупреждение показывается лишь когда адреса действительно разошлись:
+// на стандартном стенде его нет, шуметь не о чем.
+const specNotice =
+  apiBase === DEFAULT_API_BASE
+    ? ''
+    : `    <p class="spec-notice">
+      Стенд поднят на <code>${apiBase}</code>. В скачанном
+      <code>openapi.yaml</code> поле <code>servers</code> осталось прежним —
+      <code>${DEFAULT_API_BASE}</code>: контракт описывает API, а не ваш стенд.
+      При импорте в Postman или генератор клиента подставьте адрес выше.
+    </p>
+`
+
 const layout = ({ title, nav, body, wide = false }) => `<!doctype html>
 <html lang="ru">
   <head>
@@ -98,7 +115,7 @@ const layout = ({ title, nav, body, wide = false }) => `<!doctype html>
       <span class="site-title">Идемпотентный платёжный сервис</span>
       <nav>${nav}</nav>
     </header>
-${body}
+${specNotice}${body}
   </body>
 </html>
 `
