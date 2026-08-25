@@ -1,0 +1,731 @@
+openapi: 3.1.0
+
+info:
+  title: Идемпотентный платёжный сервис
+  version: 1.0.0
+  summary: >-
+    API создания платежей с ключом идемпотентности: повторный запрос не создаёт
+    второй платёж.
+  description: |
+    Учебный платёжный сервис, демонстрирующий идемпотентность создания платежа.
+    Этот файл — **единственный источник правды** о контракте: бэкенд проверяется
+    на соответствие ему, фронт берёт из него типы, страница документации
+    собирается из него.
+
+    Рядом с API живут песочница (`http://localhost:8081`) и страница
+    документации (`http://localhost:8082`).
+
+    ## Идемпотентность
+
+    Создание платежа (`POST /v1/payments`) требует заголовок `Idempotency-Key` —
+    непустую строку от 1 до 255 символов, которую выбирает клиент (обычно UUID).
+    Правила:
+
+    - **Первый запрос** с ключом создаёт платёж и отвечает **201**.
+    - **Повтор с тем же ключом и тем же телом** отвечает **200** и возвращает
+      **тот же ресурс** — включая `id` и `created_at`. Второй платёж не создаётся.
+      Разница статусов 201/200 — это сигнал «новый платёж» против «тот же платёж».
+    - **Тот же ключ с другим телом** → **409** `idempotency_key_reuse`.
+      Существующий платёж не изменяется.
+    - **Две одновременные отправки** с одним ключом порождают ровно один платёж.
+      Проигравший запрос получает либо тот же ресурс, либо **409**
+      `request_in_progress` — но никогда второй `id`.
+    - **Ключ действует ограниченное время**: TTL, по умолчанию **24 часа**.
+      После истечения тот же ключ создаёт новый платёж.
+    - **Ключ уникален в пределах мерчанта**: одинаковый ключ у разных
+      `X-Merchant-Id` — два независимых платежа.
+
+    ## Идентификация мерчанта
+
+    Заголовок `X-Merchant-Id` обязателен **на всех запросах**: непустая строка
+    до 64 символов из набора `A–Z a–z 0–9 . _ -`. Заголовок отсутствует →
+    **400** `merchant_id_required`; значение пустое, длиннее 64 символов или
+    содержит символы вне набора → **400** `invalid_merchant_id`.
+
+    Все ресурсы скоупятся по мерчанту: платёж другого мерчанта неотличим от
+    несуществующего — запрос к нему по верному `id` возвращает **404**
+    `payment_not_found`. Существование чужого ресурса не раскрывается.
+
+    ## Тестовые суммы
+
+    Терминальный статус задаётся детерминированным правилом по сумме,
+    синхронно при создании платежа. Формально правило считается по остатку:
+
+    | Условие | Статус при создании | `status_reason` |
+    |---|---|---|
+    | `amount_minor % 100 == 1` | `failed` | `test_amount_rule` |
+    | `amount_minor % 100 == 2` | `succeeded` | `test_amount_rule` |
+    | остальные суммы | `pending` | `null` |
+
+    Правило сформулировано через `% 100`, а не «оканчивается на 01/02»,
+    поэтому суммы **`1` и `2` минорных единицы — тоже триггеры**:
+    `1 % 100 == 1` даёт `failed`, `2 % 100 == 2` даёт `succeeded`. Это не
+    поломка песочницы, а ожидаемое поведение правила.
+
+    Так устроены песочницы настоящих эквайреров: суммы-триггеры позволяют
+    получить `succeeded` и `failed` без платёжного провайдера — например,
+    чтобы проверить отмену завершённого платежа (409 `payment_not_cancelable`).
+
+    ## Формат ошибок
+
+    Единый по всему API:
+
+    ```json
+    {"error": {"code": "...", "message": "...", "details": {...}}}
+    ```
+
+    `code` — машиночитаемый код из перечня ниже, `message` — человекочитаемое
+    пояснение, `details` — необязательный объект с дополнительными данными.
+    Для `validation_failed` в `details.errors` лежит карта «поле → нарушение».
+
+    | Код | HTTP | Когда |
+    |---|---|---|
+    | `merchant_id_required` | 400 | любой запрос без заголовка `X-Merchant-Id` |
+    | `invalid_merchant_id` | 400 | `X-Merchant-Id` пустой, длиннее 64 символов или вне набора `[A-Za-z0-9._-]` |
+    | `idempotency_key_required` | 400 | создание платежа без заголовка `Idempotency-Key` или с пустым значением |
+    | `invalid_amount` | 400 | `amount_minor` — ноль, отрицательное, дробное, строка или за границей безопасного целого |
+    | `invalid_currency` | 400 | `currency` вне перечня `RUB`, `USD`, `EUR`; регистр строгий |
+    | `validation_failed` | 422 | `order_id` или `description` нарушают границы; карта нарушений — в `details.errors` |
+    | `idempotency_key_reuse` | 409 | тот же `Idempotency-Key` с другим телом запроса |
+    | `request_in_progress` | 409 | повтор, пока первый запрос с этим ключом ещё обрабатывается |
+    | `payment_not_found` | 404 | платёж не существует или принадлежит другому мерчанту |
+    | `payment_not_cancelable` | 409 | отмена платежа в терминальном статусе `succeeded` или `failed` |
+
+servers:
+  - url: http://localhost:8080
+    description: Локальный API (docker compose)
+
+# Аутентификации нет по замыслу (PRD, раздел «Не входит»): мерчант
+# идентифицируется обязательным заголовком X-Merchant-Id, это не auth.
+security: []
+
+tags:
+  - name: Payments
+    description: Создание, статус, отмена и список платежей.
+
+paths:
+  /v1/payments:
+    post:
+      operationId: createPayment
+      tags: [Payments]
+      summary: Создать платёж (идемпотентно)
+      description: |
+        Создаёт платёж. Заголовки `Idempotency-Key` и `X-Merchant-Id`
+        обязательны.
+
+        Семантика повторов:
+
+        - **201** — платёж создан этим запросом (ключ встречен впервые);
+        - **200** — повтор с тем же ключом и тем же телом вернул **существующий
+          ресурс**, включая `id` и `created_at`; второй платёж не создан.
+
+        Статус созданного платежа определяется правилом тестовых сумм
+        (см. описание API): `amount_minor % 100 == 1` → `failed`,
+        `% 100 == 2` → `succeeded`, иначе `pending`. Суммы `1` и `2`
+        минорных единицы — тоже триггеры правила.
+      parameters:
+        - $ref: '#/components/parameters/XMerchantId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+            examples:
+              regular:
+                summary: Обычный платёж — статус pending
+                value:
+                  amount_minor: 125000
+                  currency: RUB
+                  order_id: order-2026-0825-0001
+                  description: Подписка на тариф «Про», август
+              test-succeeded:
+                summary: Сумма-триггер …02 — платёж сразу succeeded
+                value:
+                  amount_minor: 10002
+                  currency: RUB
+                  order_id: order-2026-0825-0002
+              test-failed:
+                summary: Сумма-триггер …01 — платёж сразу failed
+                value:
+                  amount_minor: 10001
+                  currency: RUB
+                  order_id: order-2026-0825-0003
+              short-amount-trigger:
+                summary: Сумма 2 минорных единицы — тоже триггер (2 % 100 == 2)
+                value:
+                  amount_minor: 2
+                  currency: USD
+                  order_id: order-2026-0825-0004
+      responses:
+        '201':
+          description: >-
+            Платёж создан: ключ идемпотентности встречен впервые. Статус —
+            по правилу тестовых сумм.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                pending:
+                  summary: Обычная сумма — pending
+                  value:
+                    id: pay_7Jf3K9qT2mVb
+                    status: pending
+                    status_reason: null
+                    amount_minor: 125000
+                    currency: RUB
+                    order_id: order-2026-0825-0001
+                    description: Подписка на тариф «Про», август
+                    created_at: '2026-08-25T12:34:56.000Z'
+                succeeded-by-rule:
+                  summary: Сумма …02 — сразу succeeded по правилу тестовых сумм
+                  value:
+                    id: pay_Q1mR8sN4xKpa
+                    status: succeeded
+                    status_reason: test_amount_rule
+                    amount_minor: 10002
+                    currency: RUB
+                    order_id: order-2026-0825-0002
+                    description: null
+                    created_at: '2026-08-25T12:35:10.000Z'
+                failed-by-rule:
+                  summary: Сумма …01 — сразу failed по правилу тестовых сумм
+                  value:
+                    id: pay_Zc5vW2hL9dTe
+                    status: failed
+                    status_reason: test_amount_rule
+                    amount_minor: 10001
+                    currency: RUB
+                    order_id: order-2026-0825-0003
+                    description: null
+                    created_at: '2026-08-25T12:35:42.000Z'
+        '200':
+          description: >-
+            Повтор с тем же ключом и тем же телом: возвращён существующий
+            ресурс — тот же `id`, тот же `created_at`. Второй платёж не создан.
+            Именно по паре статусов 201/200 песочница отличает «новый платёж»
+            от «тот же платёж».
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                replay:
+                  summary: Тот же ресурс, что вернулся с 201 при создании
+                  value:
+                    id: pay_7Jf3K9qT2mVb
+                    status: pending
+                    status_reason: null
+                    amount_minor: 125000
+                    currency: RUB
+                    order_id: order-2026-0825-0001
+                    description: Подписка на тариф «Про», август
+                    created_at: '2026-08-25T12:34:56.000Z'
+        '400':
+          description: >-
+            Отсутствует или невалиден обязательный заголовок, либо `amount_minor`
+            или `currency` не прошли проверку.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                idempotency_key_required:
+                  summary: Нет заголовка Idempotency-Key (или он пуст)
+                  value:
+                    error:
+                      code: idempotency_key_required
+                      message: Заголовок Idempotency-Key обязателен при создании платежа
+                merchant_id_required:
+                  summary: Нет заголовка X-Merchant-Id
+                  value:
+                    error:
+                      code: merchant_id_required
+                      message: Заголовок X-Merchant-Id обязателен
+                invalid_merchant_id:
+                  summary: X-Merchant-Id не прошёл проверку
+                  value:
+                    error:
+                      code: invalid_merchant_id
+                      message: >-
+                        X-Merchant-Id должен быть непустой строкой до 64 символов
+                        из набора A–Z a–z 0–9 . _ -
+                invalid_amount:
+                  summary: Сумма не прошла проверку
+                  value:
+                    error:
+                      code: invalid_amount
+                      message: >-
+                        amount_minor должен быть целым числом больше нуля
+                        в минорных единицах валюты
+                invalid_currency:
+                  summary: Валюта вне белого списка
+                  value:
+                    error:
+                      code: invalid_currency
+                      message: 'currency должен быть одним из: RUB, USD, EUR (регистр строгий)'
+        '409':
+          description: >-
+            Конфликт ключа идемпотентности: тот же ключ с другим телом, либо
+            первый запрос с этим ключом ещё обрабатывается.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                idempotency_key_reuse:
+                  summary: Тот же ключ, другое тело — существующий платёж не изменён
+                  value:
+                    error:
+                      code: idempotency_key_reuse
+                      message: >-
+                        Idempotency-Key уже использован с другим телом запроса;
+                        существующий платёж не изменён
+                request_in_progress:
+                  summary: Первый запрос с этим ключом ещё в полёте
+                  value:
+                    error:
+                      code: request_in_progress
+                      message: >-
+                        Запрос с этим Idempotency-Key ещё обрабатывается;
+                        повторите попытку позже
+        '422':
+          description: >-
+            `order_id` или `description` нарушают границы. Карта нарушений —
+            в `details.errors`: ключ — имя поля, значение — описание нарушения.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                validation_failed:
+                  summary: order_id длиннее 64 символов
+                  value:
+                    error:
+                      code: validation_failed
+                      message: Тело запроса не прошло валидацию
+                      details:
+                        errors:
+                          order_id: длина превышает 64 символа
+                validation_failed_multiple:
+                  summary: Несколько полей сразу
+                  value:
+                    error:
+                      code: validation_failed
+                      message: Тело запроса не прошло валидацию
+                      details:
+                        errors:
+                          order_id: не должен быть пустым
+                          description: длина превышает 512 символов
+    get:
+      operationId: listPayments
+      tags: [Payments]
+      summary: Список платежей мерчанта
+      description: >-
+        Возвращает платежи мерчанта из `X-Merchant-Id` — источник журнала
+        песочницы. Сортировка — по `created_at` по убыванию (новые сверху).
+        Пагинации нет. От повторных запросов создания с тем же ключом список
+        не растёт.
+      parameters:
+        - $ref: '#/components/parameters/XMerchantId'
+      responses:
+        '200':
+          description: Платежи мерчанта, новые сверху.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentList'
+              examples:
+                two-payments:
+                  summary: Два платежа, новый первым
+                  value:
+                    payments:
+                      - id: pay_Q1mR8sN4xKpa
+                        status: succeeded
+                        status_reason: test_amount_rule
+                        amount_minor: 10002
+                        currency: RUB
+                        order_id: order-2026-0825-0002
+                        description: null
+                        created_at: '2026-08-25T12:35:10.000Z'
+                      - id: pay_7Jf3K9qT2mVb
+                        status: pending
+                        status_reason: null
+                        amount_minor: 125000
+                        currency: RUB
+                        order_id: order-2026-0825-0001
+                        description: Подписка на тариф «Про», август
+                        created_at: '2026-08-25T12:34:56.000Z'
+                empty:
+                  summary: У мерчанта ещё нет платежей
+                  value:
+                    payments: []
+        '400':
+          $ref: '#/components/responses/MerchantHeaderError'
+
+  /v1/payments/{id}:
+    get:
+      operationId: getPayment
+      tags: [Payments]
+      summary: Получить платёж по id
+      description: >-
+        Возвращает платёж мерчанта из `X-Merchant-Id`. Несуществующий платёж
+        и платёж другого мерчанта неразличимы — оба дают 404
+        `payment_not_found`.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/XMerchantId'
+      responses:
+        '200':
+          description: Платёж найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                pending:
+                  summary: Платёж в статусе pending
+                  value:
+                    id: pay_7Jf3K9qT2mVb
+                    status: pending
+                    status_reason: null
+                    amount_minor: 125000
+                    currency: RUB
+                    order_id: order-2026-0825-0001
+                    description: Подписка на тариф «Про», август
+                    created_at: '2026-08-25T12:34:56.000Z'
+        '400':
+          $ref: '#/components/responses/MerchantHeaderError'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+
+  /v1/payments/{id}/cancel:
+    post:
+      operationId: cancelPayment
+      tags: [Payments]
+      summary: Отменить платёж
+      description: |
+        Переводит платёж из `pending` в `canceled` и отвечает **200**.
+
+        Отмена **идемпотентна**: повторная отмена уже отменённого платежа —
+        снова **200** и тот же результат. Отмена платежа в терминальном статусе
+        `succeeded` или `failed` → **409** `payment_not_cancelable`.
+        Тела у запроса нет.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/XMerchantId'
+      responses:
+        '200':
+          description: >-
+            Платёж отменён — либо этим запросом, либо ранее (повторная отмена
+            возвращает тот же результат).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                canceled:
+                  summary: Платёж переведён в canceled
+                  value:
+                    id: pay_7Jf3K9qT2mVb
+                    status: canceled
+                    status_reason: null
+                    amount_minor: 125000
+                    currency: RUB
+                    order_id: order-2026-0825-0001
+                    description: Подписка на тариф «Про», август
+                    created_at: '2026-08-25T12:34:56.000Z'
+        '400':
+          $ref: '#/components/responses/MerchantHeaderError'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+        '409':
+          description: Платёж в терминальном статусе, отмена невозможна.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                payment_not_cancelable:
+                  summary: Отмена завершённого платежа
+                  value:
+                    error:
+                      code: payment_not_cancelable
+                      message: Платёж в статусе succeeded отменить нельзя
+                      details:
+                        status: succeeded
+
+components:
+  parameters:
+    XMerchantId:
+      name: X-Merchant-Id
+      in: header
+      required: true
+      description: >-
+        Идентификатор мерчанта; обязателен на всех запросах. Непустая строка
+        до 64 символов из набора `A–Z a–z 0–9 . _ -`. Заголовок отсутствует →
+        400 `merchant_id_required`; значение невалидно → 400
+        `invalid_merchant_id`. Ключи идемпотентности и видимость платежей
+        скоупятся по мерчанту.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[A-Za-z0-9._-]{1,64}$'
+        examples:
+          - demo-shop
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Ключ идемпотентности создания платежа; обязателен. Непустая строка
+        от 1 до 255 символов, формат не навязывается — песочница генерирует
+        UUID. Пустое значение приравнивается к отсутствию заголовка → 400
+        `idempotency_key_required`. Ключ действует ограниченное время —
+        **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом
+        возвращает 200 и тот же ресурс, повтор с другим телом — 409
+        `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт
+        новый платёж. Ключ уникален в пределах мерчанта.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        examples:
+          - 5f6f37b4-6f0e-4f5d-9b1a-3c8f6d2e7a10
+    PaymentId:
+      name: id
+      in: path
+      required: true
+      description: Идентификатор платежа, выданный сервисом при создании.
+      schema:
+        type: string
+        examples:
+          - pay_7Jf3K9qT2mVb
+
+  responses:
+    MerchantHeaderError:
+      description: Заголовок `X-Merchant-Id` отсутствует или невалиден.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            merchant_id_required:
+              summary: Нет заголовка X-Merchant-Id
+              value:
+                error:
+                  code: merchant_id_required
+                  message: Заголовок X-Merchant-Id обязателен
+            invalid_merchant_id:
+              summary: X-Merchant-Id не прошёл проверку
+              value:
+                error:
+                  code: invalid_merchant_id
+                  message: >-
+                    X-Merchant-Id должен быть непустой строкой до 64 символов
+                    из набора A–Z a–z 0–9 . _ -
+    PaymentNotFound:
+      description: >-
+        Платёж не существует или принадлежит другому мерчанту — эти случаи
+        неразличимы.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            payment_not_found:
+              summary: Платёж не найден
+              value:
+                error:
+                  code: payment_not_found
+                  message: Платёж не найден
+
+  schemas:
+    Payment:
+      type: object
+      description: Платёж — основной ресурс API.
+      required:
+        - id
+        - status
+        - status_reason
+        - amount_minor
+        - currency
+        - order_id
+        - description
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Идентификатор платежа; выдаётся сервисом.
+          examples:
+            - pay_7Jf3K9qT2mVb
+        status:
+          type: string
+          description: >-
+            Статус платежа. `pending` — создан и ждёт; `succeeded` / `failed` —
+            терминальные, задаются правилом тестовых сумм синхронно при
+            создании; `canceled` — отменён из `pending`.
+          enum:
+            - pending
+            - succeeded
+            - failed
+            - canceled
+        status_reason:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Причина статуса: `test_amount_rule`, если статус задан правилом
+            тестовых сумм при создании, иначе `null`.
+          enum:
+            - test_amount_rule
+            - null
+        amount_minor:
+          type: integer
+          description: >-
+            Сумма в минорных единицах валюты (копейки, центы), целое строго
+            больше нуля, не выше границы безопасного целого (2^53 − 1).
+            Правило тестовых сумм: `amount_minor % 100 == 1` → `failed`,
+            `% 100 == 2` → `succeeded`, иначе `pending`; суммы `1` и `2` —
+            тоже триггеры.
+          minimum: 1
+          maximum: 9007199254740991
+          examples:
+            - 125000
+        currency:
+          type: string
+          description: Код валюты из белого списка; регистр строгий.
+          enum:
+            - RUB
+            - USD
+            - EUR
+        order_id:
+          type: string
+          description: Идентификатор заказа на стороне мерчанта; непустая строка до 64 символов.
+          minLength: 1
+          maxLength: 64
+          examples:
+            - order-2026-0825-0001
+        description:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Описание платежа, до 512 символов; необязательно при создании —
+            тогда `null`. Хранится и отдаётся **как есть**: сервер и клиенты
+            не интерпретируют и не исполняют его содержимое.
+          maxLength: 512
+          examples:
+            - Подписка на тариф «Про», август
+        created_at:
+          type: string
+          format: date-time
+          description: >-
+            Момент создания платежа, RFC 3339 (UTC). При повторе с тем же
+            ключом возвращается исходное значение.
+          examples:
+            - '2026-08-25T12:34:56.000Z'
+
+    PaymentCreateRequest:
+      type: object
+      description: Тело запроса на создание платежа.
+      required:
+        - amount_minor
+        - currency
+        - order_id
+      properties:
+        amount_minor:
+          type: integer
+          description: >-
+            Сумма в минорных единицах валюты, целое строго больше нуля, не выше
+            границы безопасного целого (2^53 − 1). Иначе — 400 `invalid_amount`.
+            Суммы с `amount_minor % 100 == 1` или `== 2` — триггеры правила
+            тестовых сумм (включая суммы `1` и `2`).
+          minimum: 1
+          maximum: 9007199254740991
+          examples:
+            - 125000
+        currency:
+          type: string
+          description: Код валюты; регистр строгий, иначе — 400 `invalid_currency`.
+          enum:
+            - RUB
+            - USD
+            - EUR
+        order_id:
+          type: string
+          description: >-
+            Идентификатор заказа мерчанта; непустая строка до 64 символов,
+            иначе — 422 `validation_failed`.
+          minLength: 1
+          maxLength: 64
+          examples:
+            - order-2026-0825-0001
+        description:
+          type: string
+          description: >-
+            Необязательное описание, до 512 символов, иначе — 422
+            `validation_failed`. Хранится и отдаётся как есть, не
+            интерпретируется.
+          maxLength: 512
+          examples:
+            - Подписка на тариф «Про», август
+
+    PaymentList:
+      type: object
+      description: Список платежей мерчанта, новые сверху.
+      required:
+        - payments
+      properties:
+        payments:
+          type: array
+          description: Платежи, отсортированные по `created_at` по убыванию.
+          items:
+            $ref: '#/components/schemas/Payment'
+
+    ErrorCode:
+      type: string
+      description: Машиночитаемый код ошибки; полный перечень — в описании API.
+      enum:
+        - merchant_id_required
+        - invalid_merchant_id
+        - idempotency_key_required
+        - invalid_amount
+        - invalid_currency
+        - validation_failed
+        - idempotency_key_reuse
+        - request_in_progress
+        - payment_not_found
+        - payment_not_cancelable
+
+    Error:
+      type: object
+      description: >-
+        Единый конверт ошибки. Для `validation_failed` в `details.errors`
+        лежит карта «поле → описание нарушения».
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Человекочитаемое пояснение; текст не является контрактом.
+              examples:
+                - Заголовок X-Merchant-Id обязателен
+            details:
+              type: object
+              description: >-
+                Необязательные дополнительные данные. Для `validation_failed` —
+                объект `errors` с картой «поле → нарушение»; для
+                `payment_not_cancelable` — текущий `status` платежа.
+              additionalProperties: true
