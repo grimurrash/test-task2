@@ -1,24 +1,48 @@
 #!/bin/bash
-# Перепроверка чужой находки D1 на СВОЁМ экземпляре (:8123, коммит 004a6cf):
-# дублирующийся Idempotency-Key. curl шлёт два одинаковых заголовка как есть;
+# Дублирующийся Idempotency-Key (#73). curl шлёт два заголовка как есть;
 # Node склеивает их в "K, K" — приложение считает это ДРУГИМ ключом.
+#
+# ВАЖНО ДЛЯ ПРОВЕРКИ ПОЧИНКИ (F7b). Дефект САМОМАСКИРУЕТСЯ: если слать дубль
+# и повторять дублем же, ключ совпадает сам с собой и поведение выглядит
+# правильным. Ломается только там, где рядом оказывается вариант без дубля —
+# клиент через прокси и он же напрямую, ретрай из другой среды, повтор после
+# переключения сети. Поэтому сценариев три, и зелёный только на первом
+# не означает ничего.
+#
+# После починки по F7b ожидание меняется: запрос с дублем обязан получить
+# 400 ещё до создания платежа — то есть в А первый ответ станет 400, а в Б и В
+# платёж будет ровно один.
 B=${BASE:-http://localhost:8123}
-M="dup-$RANDOM"; K="key-$RANDOM"
 BODY='{"amount_minor":125000,"currency":"RUB","order_id":"o-dup"}'
-post() { curl -s -w ' <- %{http_code}' -X POST "$B/v1/payments" -H 'Content-Type: application/json' \
-         -H "X-Merchant-Id: $M" "$@" -d "$BODY"; echo; }
 
-echo "мерчант=$M ключ=$K"
-echo '1) один POST с ДВУМЯ одинаковыми Idempotency-Key:'
-post -H "Idempotency-Key: $K" -H "Idempotency-Key: $K"
-echo '2) честный повтор ОДНИМ заголовком, тот же ключ и тело:'
-post -H "Idempotency-Key: $K"
-echo "3) платежей у мерчанта (ожидание по контракту: 1):"
-curl -s "$B/v1/payments" -H "X-Merchant-Id: $M" | tr '}' '\n' | grep -c '"id"'
+post() { # $1 — мерчант, дальше заголовки
+  local m="$1"; shift
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$B/v1/payments" \
+       -H 'Content-Type: application/json' -H "X-Merchant-Id: $m" "$@" -d "$BODY"
+}
+cnt() { curl -s "$B/v1/payments" -H "X-Merchant-Id: $1" | tr '}' '\n' | grep -c '"id"'; }
+
+echo 'А. дубль -> дубль (самомаскировка: дефект НЕ виден)'
+M="dup-a-$RANDOM"; K="key-$RANDOM"
+echo "   первый:  $(post "$M" -H "Idempotency-Key: $K" -H "Idempotency-Key: $K")"
+echo "   повтор:  $(post "$M" -H "Idempotency-Key: $K" -H "Idempotency-Key: $K")"
+echo "   платежей: $(cnt "$M")   [до починки: 1 — выглядит правильно | после F7b: 0, оба 400]"
+
+echo 'Б. дубль -> одиночный (дефект виден)'
+M="dup-b-$RANDOM"; K="key-$RANDOM"
+echo "   первый:  $(post "$M" -H "Idempotency-Key: $K" -H "Idempotency-Key: $K")"
+echo "   повтор:  $(post "$M" -H "Idempotency-Key: $K")"
+echo "   платежей: $(cnt "$M")   [до починки: 2 — ДВА платежа на один ключ | после F7b: 1]"
+
+echo 'В. одиночный -> дубль (обратный порядок, тот же отказ)'
+M="dup-c-$RANDOM"; K="key-$RANDOM"
+echo "   первый:  $(post "$M" -H "Idempotency-Key: $K")"
+echo "   повтор:  $(post "$M" -H "Idempotency-Key: $K" -H "Idempotency-Key: $K")"
+echo "   платежей: $(cnt "$M")   [до починки: 2 | после F7b: 1, повтор отклонён 400]"
 
 echo
-echo '--- контроль: без дубля тот же ключ дважды даёт ОДИН платёж ---'
-M2="dup2-$RANDOM"; K2="key-$RANDOM"
-curl -s -o /dev/null -X POST "$B/v1/payments" -H 'Content-Type: application/json' -H "X-Merchant-Id: $M2" -H "Idempotency-Key: $K2" -d "$BODY"
-curl -s -o /dev/null -X POST "$B/v1/payments" -H 'Content-Type: application/json' -H "X-Merchant-Id: $M2" -H "Idempotency-Key: $K2" -d "$BODY"
-echo "платежей: $(curl -s "$B/v1/payments" -H "X-Merchant-Id: $M2" | tr '}' '\n' | grep -c '"id"') (ожидание 1)"
+echo 'Контроль: без дубля тот же ключ дважды — один платёж (должен быть зелёным всегда)'
+M="dup-ctl-$RANDOM"; K="key-$RANDOM"
+echo "   первый:  $(post "$M" -H "Idempotency-Key: $K")"
+echo "   повтор:  $(post "$M" -H "Idempotency-Key: $K")"
+echo "   платежей: $(cnt "$M")   [ожидание 1 в любом случае]"
