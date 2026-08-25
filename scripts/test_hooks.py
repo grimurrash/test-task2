@@ -822,6 +822,228 @@ def _main():
     finally:
         shutil.rmtree(scope_root, ignore_errors=True)
 
+    print("\n  guard-scope.py — путь в данных против пути в команде (issue #43)")
+    # Восемь известных ложных отказов одного класса: путеподобная строка
+    # УПОМЯНУТА, а не использована. Каждая пара ниже — сужение и его цена:
+    # слева «безобидное проходит», справа «настоящее по-прежнему отклоняется»
+    # в той же форме команды. Без правой половины сужение незаметно становится
+    # ослаблением — прямое требование задачи, и оно же главное.
+    scope_pairs = [
+        ("тело heredoc — данные, не команда",
+         "cat > docs/note.md <<'EOF'\nсмотри ../../outside/file\nEOF",
+         "запись наружу рядом с heredoc всё равно ловится",
+         "cat > docs/note.md <<'EOF'\nтекст\nEOF\necho x > ../../outside/file"),
+        ("URL — не файловый путь",
+         'R="https://raw.githubusercontent.com/org/repo/main/x.png" && echo "$R"',
+         "путь наружу остаётся путём наружу",
+         'echo x > /outside/file'),
+        ("присваивание переменной — не запись",
+         "API=http://localhost:8080; M='X-Merchant-Id: demo-shop'",
+         "присваивание не оправдывает запись наружу в той же строке",
+         "API=http://localhost:8080; echo x > /outside/file"),
+        ("путь внутри контейнера docker — чужая файловая система",
+         'docker run --rm --entrypoint sh img -c "ls -la /app && rm -rf /tmp/x"',
+         "источник тома docker — настоящий путь хоста, проверяется",
+         'docker run --rm -v /outside/secrets:/app img sh -c "ls /app"'),
+        # Цена закрытия блокера, названная вслух: шаблон С ВЕДУЩИМ СЛЭШЕМ
+        # внутри кода снова даёт отказ. Отличить его от настоящей цели команды
+        # без разбора синтаксиса нельзя, а разрешение стереть корень дороже
+        # лишнего отказа. Шаблон без слэша по-прежнему проходит.
+        ("шаблон без ведущего слэша — не путь",
+         'python3 -c "print(\'**\')" > docs/out.txt',
+         "настоящий абсолютный путь наружу не проходит",
+         'python3 -c "print(1)" > /outside/out.txt'),
+        ("абсолютный путь ВНУТРЬ репозитория разрешён",
+         "cat >> %s/docs/journal.md <<'EOF'\nстрока\nEOF" % ROOT,
+         "абсолютный путь наружу — нет",
+         "cat >> /outside/journal.md <<'EOF'\nстрока\nEOF"),
+        # Две находки, сделанные самим фиксом, а не задачей. Вырезание heredoc
+        # едва не стало дырой: применённое дважды, оно на втором проходе
+        # не находило закрывающей метки и съедало всё до конца команды — вместе
+        # с настоящей записью наружу. Обе формы закреплены здесь, потому что
+        # поймать их повторно можно только так.
+        ("документ закрыт — тело вырезано",
+         "cat > docs/a.md <<'EOF'\nтекст ../../outside/x\nEOF\nls docs/",
+         "запись ПОСЛЕ закрытия документа проверяется",
+         "cat > docs/a.md <<'EOF'\nтекст\nEOF\nrm -rf /outside/dir"),
+        ("незакрытый документ — тело не вырезается, команда видна",
+         "cat > docs/a.md <<'EOF'\nбезобидный текст",
+         "незакрытый документ не прикрывает запись наружу",
+         "cat > docs/a.md <<'EOF'\nrm -rf /outside/dir"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in scope_pairs:
+        got_ok = decision_of(run("guard-scope.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-scope.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
+    # Ревью PR #53 (Айрат): первая версия сужений открыла шесть дыр. Ниже —
+    # ровно они, парами. Общее у всех одно: сужение, законное для одной формы,
+    # молча распространилось на другую.
+    review_pairs = [
+        ("docker-стадия сужается, соседняя — нет",
+         'docker run --rm img sh -c "ls /app"',
+         "удаление наружу в стадии ПОСЛЕ docker проверяется",
+         "docker compose up -d && rm -rf /outside/dir"),
+        ("перенаправление docker на хост — реальный путь",
+         'docker ps > docs/ps.txt',
+         "перенаправление docker наружу отклоняется",
+         "docker ps > /outside/file"),
+        # Внешнее ревью (codex, вердикт block) — восемь подтверждённых форм.
+        # Все они прошли мимо девяти парных проверок выше: те проверяли ровно
+        # то, что автор задумал, а не то, что код делает.
+        #
+        # БЛОКЕР. Исключение glob-токена задумывалось против строки `/**`
+        # внутри скрипта — и вместе с ней сняло проверку с корня файловой
+        # системы. Shell раскроет `/*` в реальные пути, а `/` реален сам.
+        ("шаблон без ведущего слэша внутри кода — не путь",
+         'python3 -c "print(\'**\')" > docs/out.txt',
+         "удаление по шаблону от корня — настоящая цель",
+         "rm -rf /*"),
+        ("glob внутри репозитория разрешён",
+         "rm -f docs/plans/*.tmp",
+         "корень файловой системы — цель, а не упоминание",
+         "rm -rf /"),
+        ("звёздочки в тексте сообщения — не путь",
+         'git commit -m "правило /** описано в документации"',
+         "рекурсивная смена прав от корня отклоняется",
+         "chmod -R 777 /**"),
+        # docker: аргументы, несущие путь ХОСТА, а не контейнера.
+        #
+        # Находку ревьюера про `docker build` с чужим контекстом проверил
+        # и считаю ЛОЖНОЙ: контекст сборки только читается, а чтение
+        # за пределами репозитория разрешено намеренно (кейс «чтение снаружи
+        # по-прежнему разрешено» выше). Дырой было бы копирование НАРУЖУ —
+        # оно проверяется следующей парой.
+        ("docker build с чужим контекстом — это чтение, оно разрешено",
+         "docker build /outside/context",
+         "запись наружу в стадии после docker build — отклоняется",
+         "docker build ./backend && cp x /outside/file"),
+        ("docker cp внутрь репозитория",
+         "docker cp c1:/app/x docs/x",
+         "docker cp наружу — путь хоста",
+         "docker cp c1:/app/x /outside/file"),
+        # Находка проверяющего (Дима, приёмка PR #53), и она о ДОСТИЖИМОСТИ,
+        # а не о разборе. Во всех прежних docker-проверках стоял флаг `--rm`,
+        # который случайно совпадал с шаблоном команды удаления в признаке
+        # записи. Разбор путей отрабатывал верно, но до него доходило
+        # управление только благодаря совпадению букв во флаге. Убери `--rm` —
+        # и семь форм из восьми проходили: `-it`, `-d`, `--volume`, `--mount`,
+        # podman, compose run.
+        #
+        # Здесь намеренно НЕТ `--rm`: проверка обязана держаться на правиле
+        # о томе, примонтированном на запись, а не на совпадении подстроки.
+        ("том только для чтения — не намерение записи",
+         'docker run -v /outside/data:/app:ro img sh -c "ls /app"',
+         "том на запись БЕЗ --rm — та же запись наружу",
+         'docker run -v /outside/data:/app img sh -c "ls /app"'),
+        ("контейнер без томов не трогает хост",
+         "docker run -it img sh",
+         "том на запись с -it — флаг не спасает и не подводит",
+         "docker run -it -v /outside/data:/app img sh"),
+        # Обёртки отодвигают имя интерпретатора от начала стадии, и тело
+        # документа переставало считаться кодом.
+        ("документ через обёртку, пишущий в файл — данные",
+         "env -i cat > docs/a.md <<'EOF'\nтекст /outside/x\nEOF",
+         "env -i python3 — тело исполняется",
+         "env -i python3 - <<'PY'\nopen('/outside/x','w')\nPY"),
+        ("timeout вокруг записи в файл — данные",
+         "timeout 10 cat > docs/a.md <<'EOF'\nтекст /outside/x\nEOF",
+         "timeout вокруг интерпретатора — тело исполняется",
+         "timeout 10 python3 - <<'PY'\nopen('/outside/x','w')\nPY"),
+        ("exec с записью в файл — данные",
+         "exec cat > docs/a.md <<'EOF'\nтекст /outside/x\nEOF",
+         "exec bash — тело исполняется",
+         "exec bash <<'SH'\nrm -rf /outside/dir\nSH"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in review_pairs:
+        got_ok = decision_of(run("guard-scope.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-scope.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
+    # Тело документа — данные только если получатель его ПИШЕТ. У интерпретатора
+    # тело исполняется, и вырезать его значило убрать из проверки настоящий код:
+    # так обходились и граница репозитория, и — что хуже — guard-secrets, ради
+    # которого весь механизм затевался. Разбор общий на четыре хука, поэтому
+    # проверяется на трёх из них.
+    interp_cases = [
+        ("guard-scope.py", "python-документ пишет наружу",
+         "python3 - <<'PY'\nopen('/outside/file','w').write('x')\nPY", "deny"),
+        ("guard-scope.py", "bash-документ удаляет наружу",
+         "bash <<'SH'\nrm -rf /outside/dir\nSH", "deny"),
+        ("guard-secrets.py", "чтение .env через python-документ",
+         "python3 - <<'PY'\nprint(open('.env').read())\nPY", "deny"),
+        ("guard-secrets.py", "чтение ключа SSH через bash-документ",
+         "bash <<'SH'\ncat ~/.ssh/id_rsa\nSH", "deny"),
+        ("guard-git.py", "push в main через bash-документ",
+         "bash <<'SH'\ngit push origin main\nSH", "deny"),
+        ("guard-scope.py", "документ, который ПИШЕТСЯ в файл, остаётся данными",
+         "cat > docs/note.md <<'EOF'\nсмотри /outside/file\nEOF", "allow"),
+        ("guard-scope.py", "имя файла со словом bash не делает документ кодом",
+         "cat > docs/bash-notes.md <<'EOF'\nтекст\nEOF", "allow"),
+        # --- Второй прогон внешнего ревью: шесть форм, подтверждённых запуском.
+        # Общее у всех: регулярка принимает решение о синтаксисе оболочки,
+        # не разбирая его. Закрываются переходом на shlex — разбор токенами,
+        # где кавычки, комментарии и подстановки видны как есть.
+        ("guard-scope.py", "маркер документа В КАВЫЧКАХ не открывает документ",
+         "echo '<<EOF'\nrm -rf /outside/dir\nEOF", "deny"),
+        ("guard-scope.py", "маркер документа в комментарии не открывает документ",
+         "echo ok # <<EOF\nrm -rf /outside/dir\nEOF", "deny"),
+        ("guard-scope.py", "подстановка внутри docker-стадии исполняется хостом",
+         'docker run img "$(touch /outside/x)"', "deny"),
+        ("guard-secrets.py", "подстановка читает учётные данные в docker-стадии",
+         "docker run img $(cat ~/.aws/credentials)", "deny"),
+        ("guard-scope.py", "--cidfile пишет файл на хост",
+         "docker run --cidfile /outside/cid img", "deny"),
+        ("guard-scope.py", "разделитель -- перед интерпретатором не прячет код",
+         "env -- python3 - <<'PY'\nopen('/outside/x','w')\nPY", "deny"),
+        ("guard-scope.py", "make -f - тоже исполняет тело документа",
+         "make -f - <<'MK'\nall:\n\trm -rf /outside/dir\nMK", "deny"),
+        # Контроль к ним: содержимое кавычек не делится на стадии, и путь
+        # контейнера внутри `sh -c` не становится путём хоста.
+        ("guard-scope.py", "путь контейнера внутри кавычек — не стадия хоста",
+         'docker run img sh -c "echo /app; ls /tmp/x"', "allow"),
+    ]
+    for hook, title, cmd, expected in interp_cases:
+        got = decision_of(run(hook, {"tool_name": "Bash", "tool_input": {"command": cmd}}))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
+
+    # Случай 8 из задачи — тот же класс, но в guard-protected-files: имя файла
+    # правил в ТЕКСТЕ задания, записываемом в другой файл. Сам хук не правится,
+    # чинится общий _paths.py, поэтому проверяется здесь же.
+    prot_pairs = [
+        ("имя правил в теле heredoc — упоминание, не правка",
+         "cat > docs/task.md <<'EOF'\nПравила требуют читать CLAUDE.md\nEOF",
+         "настоящая перезапись правил — по-прежнему отказ",
+         "cat > CLAUDE.md <<'EOF'\nпусто\nEOF"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in prot_pairs:
+        got_ok = decision_of(run("guard-protected-files.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-protected-files.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
     print("\n  mark-verify.py")
     # issue #54: verify.json тоже свой. Прежде набор десять раз за прогон удалял
     # боевой файл — и сосед, закрывавший сессию в этот момент, получал от гейта
