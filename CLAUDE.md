@@ -10,12 +10,17 @@
 - Секреты не читаем и не печатаем: `.env`, ключи, `~/.ssh`, глобальные настройки
   Claude Code. Блокирует хук `guard-secrets` — включая обход через `python -c`.
 - Файлы правил (`CLAUDE.md`, `.claude/hooks/`, `.claude/settings.json`,
-  `.github/workflows/`) правятся только с подтверждения: хук `guard-protected-files`.
+  `.github/workflows/`) правятся только по пропуску: хук `guard-protected-files`
+  отказывает и файловым инструментам, и командам. Пропуск выдаёт сэр в своём
+  терминале — `bash scripts/unlock.sh protected-files 15 "зачем"` — на срок
+  до двух часов; агенту эта команда запрещена.
 
 ## Git
 
 - Ветка на задачу: `feature/<slug>`, `fix/<slug>`, `chore/<slug>`.
-- В `main` попадает только через pull request. Прямой push переспрашивает: хук `guard-git`.
+- В `main` попадает только через pull request. Прямой push, `reset --hard`,
+  `clean -f`, ветка вне соглашения и операции с worktree блокирует хук `guard-git`
+  и открывает пропуск: `bash scripts/unlock.sh git-push-main 15 "зачем"`.
 - Force-push и переписывание истории блокирует хук `guard-git` во всех режимах.
 
 ## Работа
