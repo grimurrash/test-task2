@@ -1,11 +1,6 @@
 #!/bin/bash
-# Шаг CI «test». Стек проекта ещё не выбран — файл .ci-stack содержит "none",
-# и шаг честно сообщает, что пропущен, вместо того чтобы делать вид, что проверил.
-#
-# Когда стек выберут, сюда вписывается настоящая команда, а в .ci-stack — имя стека.
-#   PHP:    vendor/bin/phpunit  /  vendor/bin/phpstan analyse  /  vendor/bin/php-cs-fixer fix --dry-run
-#   Node:   npm test            /  npx eslint .                /  npx tsc --noEmit
-#   Python: pytest              /  ruff check .                /  mypy .
+# Шаг CI «test» — тесты бэкенда, включая проверку ответов против openapi.yaml
+# и тест на две одновременные отправки.
 set -euo pipefail
 STACK="$(cat "$(dirname "$0")/../../.ci-stack" 2>/dev/null || echo none)"
 
@@ -14,6 +9,15 @@ if [ "$STACK" = "none" ]; then
   exit 0
 fi
 
-echo "ci/test: стек $STACK, но команда не прописана в scripts/ci/test.sh"
-echo "Допишите команду — шаг обязан либо проверять, либо явно объявлять себя пропущенным."
-exit 1
+if [ "$STACK" != "node" ]; then
+  echo "ci/test: стек $STACK, но команда не прописана в scripts/ci/test.sh"
+  echo "Допишите команду — шаг обязан либо проверять, либо явно объявлять себя пропущенным."
+  exit 1
+fi
+
+# shellcheck source=scripts/ci/node-env.sh
+source "$(dirname "$0")/node-env.sh"
+
+echo "ci/test: npm test в backend/ ($(node --version))"
+cd "$BACKEND_DIR"
+npm test
