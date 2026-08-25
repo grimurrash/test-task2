@@ -213,6 +213,75 @@ describe('F11 · description', () => {
   }
 });
 
+/**
+ * #64 — длина считается в кодовых точках, а не в единицах UTF-16.
+ *
+ * `maxLength` в JSON Schema 2020-12 определён как число символов по RFC 8259,
+ * то есть кодовых точек. `str.length` в JavaScript считает единицы, и на всём
+ * вне основной плоскости даёт вдвое больше: `order_id` из 33 эмодзи получал
+ * 422 там, где контракт и любой сгенерированный из него клиент видят валидную
+ * строку. Дыра держалась потому, что автоматическая сверка проверяла ответы,
+ * а расходилась проверка запроса.
+ */
+describe('#64 · длина в кодовых точках', () => {
+  const emoji = (count: number) => '\u{1F642}'.repeat(count);
+  // Суррогатная пара: одна кодовая точка, две кодовые единицы.
+  const surrogate = '\u{1D11E}'; // ключ «соль»
+
+  it('order_id ровно из 64 эмодзи принимается', async () => {
+    const app = await startApp();
+    const value = emoji(64);
+    assert.equal(value.length, 128, 'проверка самой проверки: 64 точки, 128 единиц');
+
+    assert.equal((await app.create(validBody({ order_id: value }))).status, 201);
+  });
+
+  it('order_id из 65 эмодзи отклоняется', async () => {
+    const app = await startApp();
+    const res = await app.create(validBody({ order_id: emoji(65) }));
+
+    assert.equal(res.status, 422);
+    assert.ok(fieldErrors(res.body)['order_id']);
+  });
+
+  it('description ровно из 512 эмодзи принимается', async () => {
+    const app = await startApp();
+    assert.equal((await app.create(validBody({ description: emoji(512) }))).status, 201);
+  });
+
+  it('description из 513 эмодзи отклоняется', async () => {
+    const app = await startApp();
+    const res = await app.create(validBody({ description: emoji(513) }));
+
+    assert.equal(res.status, 422);
+    assert.ok(fieldErrors(res.body)['description']);
+  });
+
+  it('суррогатная пара на границе считается одним символом', async () => {
+    const app = await startApp();
+    const value = 'o'.repeat(63) + surrogate;
+    assert.equal(value.length, 65, 'проверка самой проверки: 64 точки, 65 единиц');
+
+    assert.equal((await app.create(validBody({ order_id: value }))).status, 201);
+  });
+
+  it('суррогатная пара за границей отклоняется', async () => {
+    const app = await startApp();
+    const res = await app.create(validBody({ order_id: 'o'.repeat(64) + surrogate }));
+
+    assert.equal(res.status, 422);
+  });
+
+  it('строка возвращается байт-в-байт, а не перекодированной', async () => {
+    const app = await startApp();
+    const value = `${emoji(10)}${surrogate} обычный текст`;
+
+    const created = await app.create(validBody({ order_id: value }));
+    assert.equal(created.status, 201);
+    assert.equal(asPayment(created.body).order_id, value);
+  });
+});
+
 // Решение по пробелу C (#32): `additionalProperties: false`.
 describe('Лишние поля в теле', () => {
   it('поле сверх схемы отклоняется и называется по имени', async () => {

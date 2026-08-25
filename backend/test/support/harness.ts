@@ -8,7 +8,7 @@ import { after } from 'node:test';
 
 import { createServer, type AppDeps } from '../../src/app.js';
 import type { Payment } from '../../src/domain/payment.js';
-import { assertMatchesContract } from './contract.js';
+import { assertMatchesContract, requestBodyErrors, requestBodyValid } from './contract.js';
 
 export interface TestClock {
   now(): number;
@@ -57,6 +57,42 @@ export interface TestApp {
   list(merchant?: string | null): Promise<Response>;
   raw(method: string, path: string, init?: RequestInit): Promise<Response>;
   close(): Promise<void>;
+}
+
+/**
+ * Сверка вердиктов: схема запроса из контракта против валидации сервера.
+ *
+ * Свойство простое и жёсткое — **тело валидно по схеме тогда и только тогда,
+ * когда сервер не ответил 422**. Проверяется на каждом создании платежа
+ * во всех тестах, поэтому расхождение вроде #64 больше не может отсидеться:
+ * его поймает первый же тест, отправивший такое тело.
+ *
+ * Ответы 400 из сверки исключены: они относятся к форме запроса (заголовки,
+ * неразобранное тело), а не к полям, и схема о них ничего не говорит.
+ */
+function assertServerAgreesWithSchema(payload: string, status: number): void {
+  if (status === 400) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return; // неразобранное тело — не вопрос схемы
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+
+  const validBySchema = requestBodyValid(parsed);
+  const acceptedByServer = status !== 422;
+
+  if (validBySchema === acceptedByServer) return;
+
+  throw new Error(
+    validBySchema
+      ? `Сервер ответил 422 на тело, которое схема контракта считает валидным.\n` +
+        `Тело: ${payload.slice(0, 400)}`
+      : `Сервер принял тело (${String(status)}), которое схема контракта отвергает: ` +
+        `${requestBodyErrors(parsed)}\nТело: ${payload.slice(0, 400)}`,
+  );
 }
 
 export const MERCHANT = 'demo-shop';
@@ -133,10 +169,13 @@ export async function startApp(options: StartOptions = {}): Promise<TestApp> {
       const contentType = options.contentType === undefined ? 'application/json' : options.contentType;
       if (contentType !== null) extra['Content-Type'] = contentType;
 
-      return send('/v1/payments', 'POST', '/v1/payments', {
+      const payload = options.rawBody ?? JSON.stringify(body);
+      const response = await send('/v1/payments', 'POST', '/v1/payments', {
         headers: headers(options.merchant, extra),
-        body: options.rawBody ?? JSON.stringify(body),
+        body: payload,
       });
+      assertServerAgreesWithSchema(payload, response.status);
+      return response;
     },
     getPayment(id, merchant) {
       return send('/v1/payments/{id}', 'GET', `/v1/payments/${encodeURIComponent(id)}`, {
