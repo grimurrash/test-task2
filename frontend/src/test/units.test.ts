@@ -11,6 +11,13 @@ describe('деньги: минорные единицы → строка', () =>
   it('12002 RUB → 120,02 RUB', () => {
     expect(formatAmount(12002, 'RUB')).toBe('120,02 RUB')
   })
+  it('граница безопасного целого — без потери копейки (#92)', () => {
+    expect(formatAmount(9007199254740991, 'RUB').replace(/ /g, ' ')).toBe(
+      '90 071 992 547 409,91 RUB',
+    )
+    expect(formatAmount(1, 'RUB')).toBe('0,01 RUB')
+    expect(formatAmount(99, 'USD')).toBe('0,99 USD')
+  })
   it('149000 RUB → 1 490,00 RUB (неразрывный пробел Intl)', () => {
     expect(formatAmount(149000, 'RUB').replace(/ /g, ' ')).toBe('1 490,00 RUB')
   })
