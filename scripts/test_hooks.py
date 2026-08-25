@@ -177,8 +177,15 @@ BASH_LS_WITH_MARKER = {
     },
 }
 
-def run(hook, payload):
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=ROOT)
+def run(hook, payload, project_dir=None):
+    # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
+    # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
+    # переменную (или os.getcwd() в её отсутствие). project_dir=None — обычный
+    # прогон (ROOT — расположение этого файла); передать своё значение —
+    # значит буквально воспроизвести «сессию, у которой CLAUDE_PROJECT_DIR
+    # указывает на worktree», а не полагаться на то, что хук прочтёт cwd
+    # из payload.
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT)
     proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
@@ -209,6 +216,28 @@ def make_repo(branch):
         check=True,
     )
     return d
+
+def make_repo_with_worktree():
+    """Основная копия с настоящим linked worktree внутри — issue #24: набор
+    раньше проверял хуки только из одного места и не видел, что граница
+    «внутри/снаружи» может поехать при запуске изнутри worktree. Проверяется
+    так, как это реально устроено у git (`git worktree add`), а не текстовой
+    имитацией. Возвращает (root, worktree_dir); вызывающий отвечает
+    за shutil.rmtree(root) — worktree лежит внутри и удалится вместе с ним.
+    """
+    root = tempfile.mkdtemp(prefix="guard-scope-root-")
+    subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+    subprocess.run(
+        ["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    worktree_dir = os.path.join(root, ".worktrees", "psp-x")
+    subprocess.run(
+        ["git", "-C", root, "worktree", "add", "-q", worktree_dir, "-b", "feature/x"],
+        check=True,
+    )
+    return root, worktree_dir
 
 def run_git(cwd, cmd):
     return run("guard-git.py", {"tool_name": "Bash",
@@ -373,6 +402,54 @@ def main():
     finally:
         shutil.rmtree(main_repo, ignore_errors=True)
         shutil.rmtree(feat_repo, ignore_errors=True)
+
+    print("\n  guard-scope.py — граница общая с linked worktree (issue #24)")
+    # Прежде набор проверял хуки только из одного места и не видел, что внутри
+    # linked worktree корень мог поехать: `.git` там — не то же самое, что
+    # в основной копии, и относительный путь наружу мог формально остаться
+    # «внутри» самого worktree.
+    scope_root, scope_worktree = make_repo_with_worktree()
+    try:
+        scope_cases = [
+            ("touch sub/note.txt", "allow",
+             "запись внутри worktree — внутри общего корня"),
+            ("echo x > ../outside.txt", "deny",
+             "относительный путь наружу из worktree — по общему корню, не по самому worktree"),
+            ("rm -rf ../../../outside", "deny",
+             "удаление далеко наружу из worktree"),
+            ("git worktree add ../psp-x -b feature/y", "deny",
+             # Именно "psp-x" — то же имя, что у самого worktree, не соседнее.
+             # Настоящий баг: `../psp-x`, посчитанный от корня psp-x, возвращает
+             # в тот же psp-x (resolved == root) — не от «неверного соседа»,
+             # а от возврата в себя. Другое имя (psp-y) денаится и старым
+             # кодом просто как несовпадающий сосед, бага не показывая.
+             "self-referential — той же формы, что нашла продуктовая сессия"),
+        ]
+        # Путь первый: hook получает cwd в самом событии — так, как его видит
+        # PreToolUse в реальной сессии (проверено отладочным прогоном).
+        for cmd, expected, title in scope_cases:
+            got = decision_of(run("guard-scope.py", {"tool_name": "Bash",
+                                                      "tool_input": {"command": cmd},
+                                                      "cwd": scope_worktree}))
+            ok = got == expected
+            failures += 0 if ok else 1
+            print("    %s %-70s ожидали %-5s получили %s"
+                  % ("✓" if ok else "✗", title + " (cwd в событии)", expected, got))
+        # Путь второй: буквальное воспроизведение бага issue #24 — cwd в событии
+        # ОТСУТСТВУЕТ (как во всех прежних кейсах CASES), а CLAUDE_PROJECT_DIR
+        # указывает на сам worktree — ровно то, что даёт `cd .../psp-<роль> &&
+        # python3 scripts/test_hooks.py` из воспроизведения в задаче. Старый код
+        # ни разу не смотрел на JSON `cwd`, только на эту переменную.
+        for cmd, expected, title in scope_cases:
+            got = decision_of(run("guard-scope.py",
+                                  {"tool_name": "Bash", "tool_input": {"command": cmd}},
+                                  project_dir=scope_worktree))
+            ok = got == expected
+            failures += 0 if ok else 1
+            print("    %s %-70s ожидали %-5s получили %s"
+                  % ("✓" if ok else "✗", title + " (только CLAUDE_PROJECT_DIR)", expected, got))
+    finally:
+        shutil.rmtree(scope_root, ignore_errors=True)
 
     print("\n  mark-verify.py")
     state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
