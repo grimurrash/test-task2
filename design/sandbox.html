@@ -102,7 +102,9 @@ body {
   padding: var(--input-padding-y) var(--input-padding-x);
 }
 .control:focus, .control--focus { outline: none; border-color: var(--input-border-focus); box-shadow: var(--focus-ring); }
-/* select — в общий вид полей: без нативной стрелки и системной рамки */
+/* select — в общий вид полей: без нативной стрелки и системной рамки.
+   Цвет стрелки зашит в data-URI литералом (%235b6472 = --color-text-muted):
+   var() внутри url() не работает — при смене палитры менять вместе с токеном. */
 select.control {
   appearance: none; -webkit-appearance: none;
   background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><path d="M1 1.5l5 5 5-5" fill="none" stroke="%235b6472" stroke-width="1.8" stroke-linecap="round"/></svg>');
@@ -348,7 +350,7 @@ select.control {
       <div class="field">
         <label for="desc">Описание (description)</label>
         <textarea class="control" id="desc" rows="2">Подписка PRO, август</textarea>
-        <div class="counter">21 / 512</div>
+        <div class="counter">20 / 512</div>
       </div>
 
       <div class="field">
@@ -559,11 +561,19 @@ select.control {
 
       <article class="payment">
         <div class="payment-head">
-          <span class="amount">1 490,00 RUB</span><span class="minor mono">149000</span>
-          <span class="status status--pending">pending</span>
+          <span class="amount">120,02 RUB</span><span class="minor mono">12002</span>
+          <span class="status status--succeeded">succeeded</span>
         </div>
-        <div class="meta"><span class="chip">pay_51e8b4</span><span class="mono">ORD-1042</span></div>
-        <p class="desc">Подписка PRO, август</p>
+        <div class="meta">
+          <span class="chip">pay_9d31f6</span><span class="mono">ORD-1044</span>
+          <span class="chip">status_reason: test_amount_rule</span>
+        </div>
+        <p class="desc">Продление тарифа «Старт» на один месяц с переносом неиспользованных
+        лимитов прошлого периода, промокод SUMMER-26 применён при оформлении заказа
+        в мобильном приложении; чек отправлен на почту клиента, дубль чека — в личный
+        кабинет. Оплата прошла через демонстрационный шлюз песочницы.</p>
+        <p class="desc-note">Длинный description (до 512 символов): обрезан по трём строкам,
+        полный текст — при раскрытии карточки.</p>
       </article>
 
       <article class="payment">
@@ -578,19 +588,11 @@ select.control {
 
       <article class="payment">
         <div class="payment-head">
-          <span class="amount">120,02 RUB</span><span class="minor mono">12002</span>
-          <span class="status status--succeeded">succeeded</span>
+          <span class="amount">1 490,00 RUB</span><span class="minor mono">149000</span>
+          <span class="status status--pending">pending</span>
         </div>
-        <div class="meta">
-          <span class="chip">pay_9d31f6</span><span class="mono">ORD-1044</span>
-          <span class="chip">status_reason: test_amount_rule</span>
-        </div>
-        <p class="desc">Продление тарифа «Старт» на один месяц с переносом неиспользованных
-        лимитов прошлого периода, промокод SUMMER-26 применён при оформлении заказа
-        в мобильном приложении; чек отправлен на почту клиента, дубль чека — в личный
-        кабинет. Оплата прошла через демонстрационный шлюз песочницы.</p>
-        <p class="desc-note">Длинный description (до 512 символов): обрезан по трём строкам,
-        полный текст — при раскрытии карточки.</p>
+        <div class="meta"><span class="chip">pay_51e8b4</span><span class="mono">ORD-1042</span></div>
+        <p class="desc">Подписка PRO, август</p>
       </article>
 
       <article class="payment">
