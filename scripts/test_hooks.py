@@ -185,7 +185,7 @@ def run(hook, payload, project_dir=None):
     # значит буквально воспроизвести «сессию, у которой CLAUDE_PROJECT_DIR
     # указывает на worktree», а не полагаться на то, что хук прочтёт cwd
     # из payload.
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT)
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT, _REPO_ROOT_DEBUG="1")
     proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
@@ -428,26 +428,32 @@ def main():
         # Путь первый: hook получает cwd в самом событии — так, как его видит
         # PreToolUse в реальной сессии (проверено отладочным прогоном).
         for cmd, expected, title in scope_cases:
-            got = decision_of(run("guard-scope.py", {"tool_name": "Bash",
-                                                      "tool_input": {"command": cmd},
-                                                      "cwd": scope_worktree}))
+            proc = run("guard-scope.py", {"tool_name": "Bash",
+                                          "tool_input": {"command": cmd},
+                                          "cwd": scope_worktree})
+            got = decision_of(proc)
             ok = got == expected
             failures += 0 if ok else 1
             print("    %s %-70s ожидали %-5s получили %s"
                   % ("✓" if ok else "✗", title + " (cwd в событии)", expected, got))
+            if not ok and proc.stderr:
+                print("        stderr: %s" % proc.stderr.strip()[:400])
         # Путь второй: буквальное воспроизведение бага issue #24 — cwd в событии
         # ОТСУТСТВУЕТ (как во всех прежних кейсах CASES), а CLAUDE_PROJECT_DIR
         # указывает на сам worktree — ровно то, что даёт `cd .../psp-<роль> &&
         # python3 scripts/test_hooks.py` из воспроизведения в задаче. Старый код
         # ни разу не смотрел на JSON `cwd`, только на эту переменную.
         for cmd, expected, title in scope_cases:
-            got = decision_of(run("guard-scope.py",
-                                  {"tool_name": "Bash", "tool_input": {"command": cmd}},
-                                  project_dir=scope_worktree))
+            proc = run("guard-scope.py",
+                      {"tool_name": "Bash", "tool_input": {"command": cmd}},
+                      project_dir=scope_worktree)
+            got = decision_of(proc)
             ok = got == expected
             failures += 0 if ok else 1
             print("    %s %-70s ожидали %-5s получили %s"
                   % ("✓" if ok else "✗", title + " (только CLAUDE_PROJECT_DIR)", expected, got))
+            if not ok and proc.stderr:
+                print("        stderr: %s" % proc.stderr.strip()[:400])
     finally:
         shutil.rmtree(scope_root, ignore_errors=True)
 

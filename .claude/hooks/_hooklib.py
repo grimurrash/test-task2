@@ -40,8 +40,13 @@ def repo_root(cwd=None):
             ["git", "rev-parse", "--git-common-dir"],
             cwd=base, capture_output=True, text=True, timeout=5,
         )
-    except Exception:
+    except Exception as exc:
+        if os.environ.get("_REPO_ROOT_DEBUG"):
+            print("repo_root DEBUG: exception base=%r %r" % (base, exc), file=sys.stderr)
         return os.path.realpath(base)
+    if os.environ.get("_REPO_ROOT_DEBUG"):
+        print("repo_root DEBUG: base=%r rc=%r stdout=%r stderr=%r"
+              % (base, proc.returncode, proc.stdout, proc.stderr), file=sys.stderr)
     if proc.returncode != 0:
         return os.path.realpath(base)
     common_dir = proc.stdout.strip()
