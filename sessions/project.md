@@ -20,9 +20,9 @@
 |---|---|---|---|
 | [#9](https://github.com/grimurrash/test-task2/issues/9) | контракт `openapi.yaml` | `feature/contract-openapi` | PRD |
 | [#10](https://github.com/grimurrash/test-task2/issues/10) | дизайн: макет песочницы и доков | `feature/design-sandbox` | PRD, параллельно с #9 |
-| [#11](https://github.com/grimurrash/test-task2/issues/11) | бэкенд: API и тесты | `feature/backend-api`, worktree `../psp-backend` | #9 |
-| [#12](https://github.com/grimurrash/test-task2/issues/12) | фронт: песочница | `feature/frontend-sandbox`, worktree `../psp-frontend` | #9, #10, #11 |
-| [#13](https://github.com/grimurrash/test-task2/issues/13) | документация: страница Scalar | `feature/docs-openapi`, worktree `../psp-docs` | #9 (curl-проверка — после #11) |
+| [#11](https://github.com/grimurrash/test-task2/issues/11) | бэкенд: API и тесты | `feature/backend-api`, worktree `.worktrees/psp-backend` | #9 |
+| [#12](https://github.com/grimurrash/test-task2/issues/12) | фронт: песочница | `feature/frontend-sandbox`, worktree `.worktrees/psp-frontend` | #9, #10, #11 |
+| [#13](https://github.com/grimurrash/test-task2/issues/13) | документация: страница Scalar | `feature/docs-openapi`, worktree `.worktrees/psp-docs` | #9 (curl-проверка — после #11) |
 | [#14](https://github.com/grimurrash/test-task2/issues/14) | devops: compose и README | `feature/devops-compose` | #11, #12, #13 |
 | [#15](https://github.com/grimurrash/test-task2/issues/15) | QA-ломатель | `feature/qa-breaker` | #14 |
 | [#18](https://github.com/grimurrash/test-task2/issues/18) | сдача: README, REPORT, PDF, гигиена | `chore/release` | #9–#15, последняя |
