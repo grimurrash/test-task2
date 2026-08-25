@@ -8,7 +8,12 @@ import { after } from 'node:test';
 
 import { createServer, type AppDeps } from '../../src/app.js';
 import type { Payment } from '../../src/domain/payment.js';
-import { assertMatchesContract, requestBodyErrors, requestBodyValid } from './contract.js';
+import {
+  assertErrorEnvelope,
+  assertMatchesContract,
+  requestBodyErrors,
+  requestBodyValid,
+} from './contract.js';
 
 export interface TestClock {
   now(): number;
@@ -150,6 +155,7 @@ export async function startApp(options: StartOptions = {}): Promise<TestApp> {
     // описывает. Ответы вне контракта (неизвестный маршрут, 5xx) проверяются
     // отдельными тестами по конверту 5.4.
     assertMatchesContract(route, method, res.status, body);
+    assertErrorEnvelope(res.status, body, `${method} ${route}`);
     return { status: res.status, body, text, headers: res.headers };
   }
 
@@ -196,12 +202,14 @@ export async function startApp(options: StartOptions = {}): Promise<TestApp> {
     async raw(method, path, init = {}) {
       const res = await fetch(`${url}${path}`, { ...init, method });
       const text = await res.text();
-      return {
-        status: res.status,
-        body: text.length > 0 ? JSON.parse(text) : undefined,
-        text,
-        headers: res.headers,
-      };
+      const body: unknown = text.length > 0 ? JSON.parse(text) : undefined;
+
+      // Ответы вне описанных путей идут только сюда: `raw` — единственная
+      // дверь обвязки, через которую можно спросить чужой метод или чужой
+      // адрес. Поэтому сверка конверта ошибки живёт здесь, а не в тесте.
+      assertErrorEnvelope(res.status, body, `${method} ${path}`);
+
+      return { status: res.status, body, text, headers: res.headers };
     },
     close,
   };

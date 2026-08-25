@@ -65,8 +65,9 @@ function headerCharLength(value: string): number {
 export function requireMerchantId(values: string[]): string {
   const value = values[0];
   if (value === undefined) throw merchantIdRequired();
-  if (values.length > 1) throw invalidMerchantId();
-  if (!MERCHANT_ID_PATTERN.test(value)) throw invalidMerchantId();
+  if (values.length > 1) throw invalidMerchantId('заголовок прислан несколько раз');
+  if (!MERCHANT_ID_PATTERN.test(value))
+    throw invalidMerchantId('ожидается непустая строка до 64 символов из набора A–Z a–z 0–9 . _ -');
   return value;
 }
 
