@@ -6,45 +6,46 @@ export function Scenarios(props: {
   onDoubleCancel: () => void
   onCancelCompleted: () => void
 }) {
-  const { inFlight } = props
+  // У чипа ожидания текст и класс различаются только у гонки: «200/409» —
+  // недетерминированный исход (решение проджекта по U4), окрашенный янтарным
+  // как предупреждение, ровно как в принятом макете.
   const scenarios: Array<{
     name: string
     sub: string
-    expects: Array<{ code: string; cls: '200' | '201' | '409' }>
+    expects: Array<{ text: string; cls: '200' | '201' | '409' }>
     run: () => void
   }> = [
     {
       name: 'Повтор с тем же телом',
       sub: 'тот же платёж, тот же id',
-      expects: [{ code: '200', cls: '200' }],
+      expects: [{ text: '200', cls: '200' }],
       run: props.onRepeat,
     },
     {
       name: 'Тот же ключ, другое тело',
       sub: 'idempotency_key_reuse',
-      expects: [{ code: '409', cls: '409' }],
+      expects: [{ text: '409', cls: '409' }],
       run: props.onReuse,
     },
     {
-      // Исход гонки зафиксирован контрактом на 409 request_in_progress (#32).
       name: 'Две одновременные отправки',
       sub: 'ровно один платёж',
       expects: [
-        { code: '201', cls: '201' },
-        { code: '409', cls: '409' },
+        { text: '201', cls: '201' },
+        { text: '200/409', cls: '409' },
       ],
       run: props.onRace,
     },
     {
       name: 'Двойная отмена',
       sub: 'отмена идемпотентна',
-      expects: [{ code: '200', cls: '200' }],
+      expects: [{ text: '200', cls: '200' }],
       run: props.onDoubleCancel,
     },
     {
       name: 'Отменить завершённый платёж',
       sub: 'сумма …02, payment_not_cancelable',
-      expects: [{ code: '409', cls: '409' }],
+      expects: [{ text: '409', cls: '409' }],
       run: props.onCancelCompleted,
     },
   ]
@@ -58,15 +59,15 @@ export function Scenarios(props: {
           type="button"
           className="scenario"
           onClick={s.run}
-          disabled={inFlight}
+          disabled={props.inFlight}
         >
           <span className="name">
             {s.name}
             <small>{s.sub}</small>
           </span>
           {s.expects.map((e) => (
-            <span key={e.code} className={`expect expect--${e.cls}`}>
-              {e.code}
+            <span key={e.text} className={`expect expect--${e.cls}`}>
+              {e.text}
             </span>
           ))}
         </button>

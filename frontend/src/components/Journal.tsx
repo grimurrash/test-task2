@@ -1,4 +1,4 @@
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import type { JournalEntry, JournalItem } from '../types'
 import { shortKey } from '../lib/semantics'
 import { keyDotColor } from '../lib/keyhue'
@@ -15,7 +15,7 @@ function KeyChip({ value }: { value: string }) {
 }
 
 // Тело ответа с подсветкой id/created_at для «того же платежа»: повтор виден
-// как повтор — те же значения, что была в ответе 201.
+// как повтор — те же значения, что были в ответе 201.
 function Payload({ body, highlight }: { body: unknown; highlight: boolean }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body, null, 2)
   if (!highlight) return <div className="payload">{text}</div>
@@ -38,13 +38,10 @@ function Payload({ body, highlight }: { body: unknown; highlight: boolean }) {
   )
 }
 
-function Entry({
-  entry,
-  onToggleBody,
-}: {
-  entry: JournalEntry
-  onToggleBody: (uid: string) => void
-}) {
+function Entry({ entry }: { entry: JournalEntry }) {
+  // Раскрытие тела — забота самой записи; «тот же платёж» раскрыт сразу,
+  // чтобы совпадение id/created_at было видно без клика.
+  const [open, setOpen] = useState(entry.verdict === 'same')
   const badgeText = entry.status === null ? 'нет ответа' : String(entry.status)
   return (
     <article className={`entry entry--${entry.semantic}`}>
@@ -58,9 +55,7 @@ function Entry({
         {entry.verdict === 'new' && <span className="verdict verdict--new">новый платёж</span>}
         {entry.verdict === 'same' && <span className="verdict verdict--same">тот же платёж</span>}
         {entry.errorCode && (
-          <span
-            className={`chip chip--errcode${entry.semantic === 'error' ? ' chip--errcode-error' : ''}`}
-          >
+          <span className={`chip chip--errcode chip--errcode--${entry.semantic}`}>
             {entry.errorCode}
           </span>
         )}
@@ -73,22 +68,19 @@ function Entry({
           <button
             type="button"
             className="payload-toggle"
-            onClick={() => onToggleBody(entry.uid)}
-            aria-expanded={entry.bodyOpen}
+            onClick={() => setOpen(!open)}
+            aria-expanded={open}
           >
-            {entry.bodyOpen ? 'скрыть тело ответа' : 'тело ответа'}
+            {open ? 'скрыть тело ответа' : 'тело ответа'}
           </button>
-          {entry.bodyOpen && <Payload body={entry.body} highlight={entry.verdict === 'same'} />}
+          {open && <Payload body={entry.body} highlight={entry.verdict === 'same'} />}
         </>
       )}
     </article>
   )
 }
 
-export function Journal(props: {
-  items: JournalItem[]
-  onToggleBody: (uid: string) => void
-}) {
+export function Journal(props: { items: JournalItem[] }) {
   if (props.items.length === 0) {
     return <p className="empty">Журнал пуст — отправьте первый запрос.</p>
   }
@@ -96,7 +88,7 @@ export function Journal(props: {
     <div className="timeline">
       {props.items.map((item) =>
         item.kind === 'entry' ? (
-          <Entry key={item.entry.uid} entry={item.entry} onToggleBody={props.onToggleBody} />
+          <Entry key={item.entry.uid} entry={item.entry} />
         ) : (
           <div key={item.uid} className={`group group--${item.semantic}`}>
             <div className="group-label">
@@ -108,8 +100,9 @@ export function Journal(props: {
                 </>
               )}
             </div>
+            {item.note && <p className="note">{item.note}</p>}
             {item.entries.map((e) => (
-              <Entry key={e.uid} entry={e} onToggleBody={props.onToggleBody} />
+              <Entry key={e.uid} entry={e} />
             ))}
           </div>
         ),

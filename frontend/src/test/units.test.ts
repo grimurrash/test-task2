@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { formatAmount } from '../lib/money'
 import { semanticFor, verdictFor, shortKey } from '../lib/semantics'
 import { keyHue } from '../lib/keyhue'
-import { buildBody, parseAmountInput } from '../App'
+import { buildBody, entryFromResult, groupSemantic, parseAmountInput } from '../App'
 import { createPayment } from '../api/client'
 
 afterEach(() => vi.restoreAllMocks())
@@ -42,16 +42,27 @@ describe('тело запроса: строго четыре поля контр
     expect(parseAmountInput('1.5')).toBe(1.5)
     expect(parseAmountInput('0')).toBe(0)
   })
+  it('искажаемый Number() ввод не подменяется: hex, экспонента и потеря точности уходят строкой', () => {
+    expect(parseAmountInput('0x10')).toBe('0x10')
+    expect(parseAmountInput('1e3')).toBe('1e3')
+    expect(parseAmountInput('1.0000000000000000001')).toBe('1.0000000000000000001')
+    expect(parseAmountInput('9007199254740993')).toBe('9007199254740993')
+  })
 })
 
 describe('U2: повтор шлёт тело байт-в-байт', () => {
-  it('строка тела передаётся в fetch без пересериализации', async () => {
+  it('строка тела передаётся в fetch без пересериализации, оба ответа разобраны', async () => {
     const raw = '{"amount_minor":125000,"currency":"RUB","order_id":"ORD-1"}'
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('{}', { status: 201 }),
-    )
-    await createPayment(raw, 'key-1', 'demo-shop-a')
-    await createPayment(raw, 'key-1', 'demo-shop-a')
+    // Свежий Response на каждый вызов: тело Response читается один раз
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() =>
+        Promise.resolve(new Response('{"id":"pay_1"}', { status: 201 })),
+      )
+    const first = await createPayment(raw, 'key-1', 'demo-shop-a')
+    const second = await createPayment(raw, 'key-1', 'demo-shop-a')
+    expect(first).toEqual({ kind: 'http', status: 201, body: { id: 'pay_1' } })
+    expect(second).toEqual({ kind: 'http', status: 201, body: { id: 'pay_1' } })
     expect(spy).toHaveBeenCalledTimes(2)
     const bodies = spy.mock.calls.map((c) => (c[1] as RequestInit).body)
     expect(bodies[0]).toBe(raw)
@@ -61,6 +72,52 @@ describe('U2: повтор шлёт тело байт-в-байт', () => {
     )
     expect(headers[0]).toBe('key-1')
     expect(headers[1]).toBe('key-1')
+  })
+})
+
+describe('журнал: запись из результата', () => {
+  it('сетевой сбой на создании советует повтор с ключом, на отмене — нет', () => {
+    const net = { kind: 'network' as const, message: 'Failed to fetch' }
+    const create = entryFromResult('create', '/v1/payments', net, 'k')
+    const cancel = entryFromResult('cancel', '/v1/payments/pay_1/cancel', net)
+    expect(create.note).toContain('Failed to fetch')
+    expect(create.note).toContain('повторить с тем же ключом')
+    expect(cancel.note).toContain('Failed to fetch')
+    expect(cancel.note).not.toContain('ключ')
+  })
+  it('422 собирает message и карту нарушений в текст записи', () => {
+    const res = {
+      kind: 'http' as const,
+      status: 422,
+      body: {
+        error: {
+          code: 'validation_failed',
+          message: 'Тело запроса не прошло валидацию',
+          details: { errors: { amount_minor: 'целое строго больше нуля' } },
+        },
+      },
+    }
+    const entry = entryFromResult('create', '/v1/payments', res, 'k')
+    expect(entry.semantic).toBe('error')
+    expect(entry.errorCode).toBe('validation_failed')
+    expect(entry.note).toContain('amount_minor — целое строго больше нуля')
+  })
+  it('семантика группы выводится из фактических записей', () => {
+    const net = { kind: 'network' as const, message: 'x' }
+    const both = [
+      entryFromResult('create', '/v1/payments', net),
+      entryFromResult('create', '/v1/payments', net),
+    ]
+    expect(groupSemantic(both)).toBe('network')
+    const mixed = [
+      entryFromResult('create', '/v1/payments', { kind: 'http', status: 201, body: { id: 'p' } }),
+      entryFromResult('create', '/v1/payments', {
+        kind: 'http',
+        status: 409,
+        body: { error: { code: 'request_in_progress', message: 'в полёте' } },
+      }),
+    ]
+    expect(groupSemantic(mixed)).toBe('conflict')
   })
 })
 

@@ -5,6 +5,7 @@ import type { Merchant } from '../App'
 export function Topbar(props: {
   merchant: Merchant
   onMerchant: (m: Merchant) => void
+  inFlight: boolean
 }) {
   return (
     <header className="topbar">
@@ -22,6 +23,7 @@ export function Topbar(props: {
               type="button"
               className={m === props.merchant ? 'active' : undefined}
               aria-pressed={m === props.merchant}
+              disabled={props.inFlight}
               onClick={() => props.onMerchant(m)}
             >
               {m}

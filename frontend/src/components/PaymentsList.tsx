@@ -1,17 +1,33 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { Payment } from '../api/client'
 import { formatAmount } from '../lib/money'
 
 // description — недоверенный текст (U6/A10): только текстовые узлы React,
 // никакого dangerouslySetInnerHTML. Длинный текст обрезан тремя строками,
 // раскрытие снимает line-clamp (design/README.md, «Края поведения»).
+// Кнопка появляется по факту обрезки (замер элемента), а не по числу
+// символов: обрезает CSS, и только он знает, что обрезал.
 function Description({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
-  const long = text.length > 120
+  const [clamped, setClamped] = useState(false)
+  const ref = useRef<HTMLParagraphElement>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(measure)
+      ro.observe(el)
+      return () => ro.disconnect()
+    }
+  }, [text, open])
   return (
     <>
-      <p className={`desc${open ? ' desc--open' : ''}`}>{text}</p>
-      {long && (
+      <p ref={ref} className={`desc${open ? ' desc--open' : ''}`}>
+        {text}
+      </p>
+      {(clamped || open) && (
         <button type="button" className="desc-toggle" onClick={() => setOpen(!open)}>
           {open ? 'свернуть' : 'показать целиком'}
         </button>

@@ -13,8 +13,7 @@ export interface JournalEntry {
   key?: string
   errorCode?: string
   note?: string
-  body?: unknown // тело ответа, раскрывается по кнопке
-  bodyOpen?: boolean
+  body?: unknown // тело ответа, раскрывается по кнопке (состояние — в Entry)
 }
 
 export type JournalItem =
@@ -23,6 +22,7 @@ export type JournalItem =
       kind: 'group'
       uid: string
       label: string
+      note?: string
       groupKey?: string
       semantic: Semantic
       entries: JournalEntry[]

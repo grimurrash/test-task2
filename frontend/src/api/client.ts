@@ -14,12 +14,18 @@ export type HttpResult =
   | { kind: 'http'; status: number; body: unknown }
   | { kind: 'network'; message: string }
 
+// Таймаут: зависший сервер не должен навсегда блокировать кнопки песочницы.
+const REQUEST_TIMEOUT_MS = 15_000
+
 async function request(
   path: string,
   init: RequestInit,
 ): Promise<HttpResult> {
   try {
-    const res = await fetch(API_BASE + path, init)
+    const res = await fetch(API_BASE + path, {
+      ...init,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
     let body: unknown = null
     const text = await res.text()
     if (text) {
@@ -31,6 +37,9 @@ async function request(
     }
     return { kind: 'http', status: res.status, body }
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      return { kind: 'network', message: `таймаут ${REQUEST_TIMEOUT_MS / 1000} с` }
+    }
     return { kind: 'network', message: e instanceof Error ? e.message : String(e) }
   }
 }
