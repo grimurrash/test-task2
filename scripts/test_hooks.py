@@ -736,6 +736,28 @@ def main():
          "cat > docs/note.md <<'EOF'\nсмотри /outside/file\nEOF", "allow"),
         ("guard-scope.py", "имя файла со словом bash не делает документ кодом",
          "cat > docs/bash-notes.md <<'EOF'\nтекст\nEOF", "allow"),
+        # --- Второй прогон внешнего ревью: шесть форм, подтверждённых запуском.
+        # Общее у всех: регулярка принимает решение о синтаксисе оболочки,
+        # не разбирая его. Закрываются переходом на shlex — разбор токенами,
+        # где кавычки, комментарии и подстановки видны как есть.
+        ("guard-scope.py", "маркер документа В КАВЫЧКАХ не открывает документ",
+         "echo '<<EOF'\nrm -rf /outside/dir\nEOF", "deny"),
+        ("guard-scope.py", "маркер документа в комментарии не открывает документ",
+         "echo ok # <<EOF\nrm -rf /outside/dir\nEOF", "deny"),
+        ("guard-scope.py", "подстановка внутри docker-стадии исполняется хостом",
+         'docker run img "$(touch /outside/x)"', "deny"),
+        ("guard-secrets.py", "подстановка читает учётные данные в docker-стадии",
+         "docker run img $(cat ~/.aws/credentials)", "deny"),
+        ("guard-scope.py", "--cidfile пишет файл на хост",
+         "docker run --cidfile /outside/cid img", "deny"),
+        ("guard-scope.py", "разделитель -- перед интерпретатором не прячет код",
+         "env -- python3 - <<'PY'\nopen('/outside/x','w')\nPY", "deny"),
+        ("guard-scope.py", "make -f - тоже исполняет тело документа",
+         "make -f - <<'MK'\nall:\n\trm -rf /outside/dir\nMK", "deny"),
+        # Контроль к ним: содержимое кавычек не делится на стадии, и путь
+        # контейнера внутри `sh -c` не становится путём хоста.
+        ("guard-scope.py", "путь контейнера внутри кавычек — не стадия хоста",
+         'docker run img sh -c "echo /app; ls /tmp/x"', "allow"),
     ]
     for hook, title, cmd, expected in interp_cases:
         got = decision_of(run(hook, {"tool_name": "Bash", "tool_input": {"command": cmd}}))
