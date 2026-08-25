@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Payment } from '../api/client'
 import { formatAmount } from '../lib/money'
+import { CardBoundary } from './CardBoundary'
 
 // description — недоверенный текст (U6/A10): только текстовые узлы React,
 // никакого dangerouslySetInnerHTML. Длинный текст обрезан тремя строками,
@@ -36,6 +37,30 @@ function Description({ text }: { text: string }) {
   )
 }
 
+// Карточка — отдельный компонент намеренно: JSX-выражения вычисляются
+// в рендере РОДИТЕЛЯ, при построении пропсов границы, и бросок в инлайне
+// пролетел бы мимо CardBoundary. Компонентом весь рендер карточки идёт
+// под границей (это поймал тест изоляции журнала, а не ревью).
+function PaymentCard({ p }: { p: Payment }) {
+  return (
+    <article className="payment">
+      <div className="payment-head">
+        <span className="amount">{formatAmount(p.amount_minor, p.currency)}</span>
+        <span className="minor mono">{p.amount_minor}</span>
+        <span className={`status status--${p.status}`}>{p.status}</span>
+      </div>
+      <div className="meta">
+        <span className="chip">{p.id}</span>
+        <span className="mono">{p.order_id}</span>
+        {p.status_reason !== null && (
+          <span className="chip">status_reason: {p.status_reason}</span>
+        )}
+      </div>
+      {p.description !== null && p.description !== '' && <Description text={p.description} />}
+    </article>
+  )
+}
+
 export function PaymentsList(props: {
   merchant: string
   payments: Payment[]
@@ -55,23 +80,9 @@ export function PaymentsList(props: {
         <p className="empty">Платежей пока нет.</p>
       )}
       {props.payments.map((p) => (
-        <article className="payment" key={p.id}>
-          <div className="payment-head">
-            <span className="amount">{formatAmount(p.amount_minor, p.currency)}</span>
-            <span className="minor mono">{p.amount_minor}</span>
-            <span className={`status status--${p.status}`}>{p.status}</span>
-          </div>
-          <div className="meta">
-            <span className="chip">{p.id}</span>
-            <span className="mono">{p.order_id}</span>
-            {p.status_reason !== null && (
-              <span className="chip">status_reason: {p.status_reason}</span>
-            )}
-          </div>
-          {p.description !== null && p.description !== '' && (
-            <Description text={p.description} />
-          )}
-        </article>
+        <CardBoundary key={p.id} label={`Платёж ${p.id}`}>
+          <PaymentCard p={p} />
+        </CardBoundary>
       ))}
     </>
   )
