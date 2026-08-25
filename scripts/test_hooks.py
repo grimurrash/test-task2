@@ -185,7 +185,7 @@ def run(hook, payload, project_dir=None):
     # значит буквально воспроизвести «сессию, у которой CLAUDE_PROJECT_DIR
     # указывает на worktree», а не полагаться на то, что хук прочтёт cwd
     # из payload.
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT, _REPO_ROOT_DEBUG="1")
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT)
     proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
@@ -217,6 +217,24 @@ def make_repo(branch):
     )
     return d
 
+def _scratch_dir_outside_tmp():
+    """Место для синтетических репозиториев — умышленно не системный /tmp.
+
+    У guard-scope есть отдельное, намеренное исключение: /tmp и /private/tmp
+    считаются всегда безопасными и пропускают границу мимо проверки (это тот
+    же код, что даёт «allow» кейсу «временная папка разрешена»). На Linux
+    tempfile.mkdtemp() без dir= кладёт файлы буквально в /tmp — и тест на
+    границу оказывается зелёным независимо от того, работает ли сама
+    проверка, потому что граница до неё не доходит вовсе. На macOS этого не
+    видно: там временная папка — /var/folders/…, не /tmp, поэтому подмена
+    искала бы себя только в CI. /var/tmp существует на обеих платформах
+    и не входит в исключение.
+    """
+    for candidate in ("/var/tmp", tempfile.gettempdir()):
+        if candidate and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return candidate
+    return None
+
 def make_repo_with_worktree():
     """Основная копия с настоящим linked worktree внутри — issue #24: набор
     раньше проверял хуки только из одного места и не видел, что граница
@@ -225,7 +243,7 @@ def make_repo_with_worktree():
     имитацией. Возвращает (root, worktree_dir); вызывающий отвечает
     за shutil.rmtree(root) — worktree лежит внутри и удалится вместе с ним.
     """
-    root = tempfile.mkdtemp(prefix="guard-scope-root-")
+    root = tempfile.mkdtemp(prefix="guard-scope-root-", dir=_scratch_dir_outside_tmp())
     subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
     subprocess.run(
         ["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t",
