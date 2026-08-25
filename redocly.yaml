@@ -1,0 +1,11 @@
+# Конфиг линтера контракта. Версия зафиксирована: @redocly/cli@2.47.0
+# (приёмка: npx @redocly/cli@2.47.0 lint openapi/openapi.yaml — ноль ошибок).
+extends:
+  - recommended
+
+rules:
+  # localhost:8080 — согласованная проджектом константа проекта (issue #9):
+  # API живёт локально в docker compose, внешнего хоста нет по замыслу.
+  no-server-example.com: off
+  # Лицензия репозиторию не назначена; выбор лицензии — вне контракта API.
+  info-license: off
