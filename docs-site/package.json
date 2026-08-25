@@ -1,0 +1,16 @@
+{
+  "name": "psp-docs-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Страница документации платёжного сервиса: собирается из openapi/openapi.yaml, раздаётся статикой",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "npm run build && node serve.mjs"
+  },
+  "devDependencies": {
+    "@scalar/api-reference": "1.66.1",
+    "marked": "18.0.11",
+    "yaml": "2.9.0"
+  }
+}

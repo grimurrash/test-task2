@@ -13,8 +13,62 @@ import subprocess
 import sys
 import time
 
+try:
+    import fcntl
+except ImportError:  # POSIX-only механизм; проект и так держится на bash и git
+    fcntl = None
+
 def project_dir():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+def update_json_state(path, mutate):
+    """Читает JSON-состояние (или {} при отсутствии/повреждении), даёт
+    mutate(dict) изменить его на месте и пишет обратно под эксклюзивной
+    блокировкой (issue #33).
+
+    Несколько ролевых сессий, читающих-меняющих-пишущих один файл
+    состояния параллельно (например, .claude/state/verify.json), без
+    блокировки теряют чужие правки — классический lost update: обе
+    прочитали одно и то же, обе дописали своё, вторая запись стирает
+    первую. Сама запись идёт во временный файл рядом и переименовывается
+    (`os.replace`, атомарно на POSIX в пределах одной файловой системы) —
+    поэтому читающему без блокировки никогда не достанется недописанный
+    JSON, и лочить чтение не требуется.
+
+    Общий помощник, не привязан к конкретному файлу состояния — годится
+    и для будущих случаев того же класса. Сегодня используется только
+    для verify.json; unlock.json, guard.jsonl и untrusted.jsonl этим не
+    переведены сознательно (issue #33: там общее состояние может быть
+    замыслом, не поломкой, и это отдельное решение).
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock_fh = None
+    try:
+        lock_fh = open(path + ".lock", "a+")
+        if fcntl:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+    except OSError:
+        lock_fh = None
+    try:
+        state = {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                state = json.load(fh)
+        except Exception:
+            state = {}
+        mutate(state)
+        tmp_path = "%s.tmp-%d" % (path, os.getpid())
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp_path, path)
+    finally:
+        if lock_fh:
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            lock_fh.close()
 
 def repo_root(cwd=None):
     """Корень ОСНОВНОЙ копии репозитория — общий для неё и для всех linked
