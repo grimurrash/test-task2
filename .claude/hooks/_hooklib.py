@@ -51,6 +51,57 @@ def allowlist():
 def allowed(text):
     return any(rx.search(text) for rx in allowlist())
 
+UNLOCK_PATH = (".claude", "state", "unlock.json")
+
+def unlock_active(zone):
+    """Действующий пропуск для зоны или None.
+
+    Решение «ask» зависит от того, покажет ли среда диалог. В неинтерактивной
+    сессии диалога нет, и «ask» молча пропускает команду — проверено 2026-08-25:
+    правка защищённого хука и создание ветки прошли, оставив в журнале только след.
+    Поэтому подтверждение здесь не спрашивается, а выдаётся заранее и с истечением:
+    сэр открывает зону командой scripts/unlock.sh, хук её видит.
+    """
+    path = os.path.join(project_dir(), *UNLOCK_PATH)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    rec = data.get(zone)
+    if not isinstance(rec, dict):
+        return None
+    try:
+        if float(rec.get("until", 0)) < time.time():
+            return None
+    except (TypeError, ValueError):
+        return None
+    return rec
+
+def confirm(zone, reason, guard=""):
+    """Действие, которое раньше спрашивало подтверждения: пропуск или отказ.
+
+    Пропускает молча, если зона открыта, и записывает факт использования:
+    открытая зона без следа в журнале — это дыра, а не удобство.
+    """
+    rec = unlock_active(zone)
+    if rec:
+        log("unlock-used", {"guard": guard, "zone": zone,
+                            "reason": reason.split("\n")[0],
+                            "unlock_reason": rec.get("reason", ""),
+                            "until": rec.get("human_until", "")})
+        sys.exit(0)
+    decide(
+        "deny",
+        "%s\n\nПодтверждение здесь не спрашивается: решение «ask» в неинтерактивной "
+        "сессии пропускает команду, оставляя лишь запись в журнале. Барьером остаётся "
+        "только отказ.\n\nЕсли это осознанно, сэр открывает зону в своём терминале:\n"
+        "    bash scripts/unlock.sh %s 15 \"зачем\"\n"
+        "Пропуск действует указанное число минут, привязан к зоне «%s» и каждое "
+        "его использование попадает в .claude/logs/guard.jsonl." % (reason, zone, zone),
+        guard=guard,
+    )
+
 def decide(decision, reason, guard=""):
     """deny — заблокировать, ask — спросить у сэра, allow — пропустить молча."""
     if decision in ("deny", "ask"):

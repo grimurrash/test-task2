@@ -28,12 +28,20 @@ DENY = [
     (r"\bgit\s+config\b[^|;&]*\bcore\.hooksPath\b", "подмена пути хуков git"),
 ]
 
-ASK = [
-    (r"\bgit\s+push\b[^|;&]*\s(?:origin\s+)?" + PROTECTED + r"\b", "прямой push в защищённую ветку (обычно нужен PR)"),
-    (r"\bgit\s+reset\s+--hard\b", "git reset --hard выбрасывает несохранённую работу"),
-    (r"\bgit\s+clean\s+-[\w]*f", "git clean -f удаляет неотслеживаемые файлы"),
-    (r"\bgit\s+checkout\s+-b\b|\bgit\s+switch\s+-c\b", "создание новой ветки"),
-    (r"\bgit\s+worktree\s+(?:add|remove)\b", "операция с worktree"),
+# Операции, которые раньше спрашивали подтверждения. Теперь каждая привязана
+# к зоне пропуска: «ask» в неинтерактивной сессии пропускает команду, поэтому
+# барьером служит отказ, а разрешение выдаётся заранее через scripts/unlock.sh.
+CONFIRM = [
+    (r"\bgit\s+push\b[^|;&]*\s(?:origin\s+)?" + PROTECTED + r"\b",
+     "прямой push в защищённую ветку (обычно нужен PR)", "git-push-main"),
+    (r"\bgit\s+reset\s+--hard\b",
+     "git reset --hard выбрасывает несохранённую работу", "git-history"),
+    (r"\bgit\s+clean\s+-[\w]*f",
+     "git clean -f удаляет неотслеживаемые файлы", "git-history"),
+    (r"\bgit\s+checkout\s+-b\b|\bgit\s+switch\s+-c\b",
+     "создание новой ветки", "git-branch"),
+    (r"\bgit\s+worktree\s+(?:add|remove)\b",
+     "операция с worktree", "git-worktree"),
 ]
 
 def main():
@@ -50,11 +58,11 @@ def main():
                 "коммитов запрещены во всех режимах." % (human, cmd[:300]),
                 guard="guard-git",
             )
-    for pattern, human in ASK:
+    for pattern, human, zone in CONFIRM:
         if re.search(pattern, cmd, re.I):
-            H.decide(
-                "ask",
-                "guard-git просит подтверждения: %s.\nКоманда: %s" % (human, cmd[:300]),
+            H.confirm(
+                zone,
+                "Заблокировано хуком guard-git: %s.\nКоманда: %s" % (human, cmd[:300]),
                 guard="guard-git",
             )
     H.ok()

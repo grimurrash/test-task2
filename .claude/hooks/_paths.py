@@ -14,6 +14,28 @@ QUOTES = str.maketrans("", "", "\"'")
 SPLIT = re.compile(r"[\s;|&()]+")
 REDIRECT = re.compile(r"(?<![0-9<>])>>?\s*(?P<path>(?:[\"'][^\"']+[\"'])|[^\s;|&<>]+)")
 
+# Признаки намерения записи. Список неполон принципиально — поэтому рядом
+# стоит отдельная проверка встроенных интерпретаторов. Живёт здесь, а не в
+# отдельном хуке, чтобы граница репозитория и защита файлов правил смотрели
+# на команду одинаково: два разных списка разойдутся при первой же правке.
+WRITE_INTENT = re.compile(
+    r"(?<![0-9<>])>>?(?![>])"                                  # перенаправление вывода
+    r"|\b(?:rm|rmdir|unlink|mv|cp|dd|truncate|shred|touch|mkdir|install|rsync|scp)\b"
+    r"|\b(?:tee|ln)\b"
+    r"|\b(?:chmod|chown|chgrp|xattr)\b"
+    r"|\bsed\b[^|;&]*\s-i\b|\bperl\b[^|;&]*\s-[a-z]*i[a-z]*\b"
+    r"|\bcurl\b[^|;&]*\s-(?:o|-output)\b|\bwget\b[^|;&]*\s-(?:O|-output-document)\b"
+    r"|\bgit\s+(?:clone|init|worktree\s+add)\b"
+    r"|\bpatch\b|\bapply\b[^|;&]*\.patch\b",
+    re.I)
+
+# Встроенный код нельзя разобрать регуляркой: если он упоминает защищённый путь
+# или путь наружу, считаем это записью. Ложный отказ дешевле пропущенной записи.
+INLINE_CODE = re.compile(
+    r"\b(?:python[\d.]*|python3)\s+-c\b|\bnode\s+-e\b|\bperl\s+-[a-z]*e\b"
+    r"|\bruby\s+-e\b|\bphp\s+-r\b|\bosascript\b|\bawk\b[^|;&]*\bprint\s*>",
+    re.I)
+
 def normalize(text):
     """Разворачивает $HOME и ~, снимает кавычки. Строка становится сравнимой."""
     if not text:

@@ -19,28 +19,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
-from _paths import normalize, path_candidates, resolve
+from _paths import INLINE_CODE, WRITE_INTENT, normalize, path_candidates, resolve
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-
-# Признаки намерения записи. Список неполон принципиально — поэтому ниже
-# добавлена отдельная проверка встроенных интерпретаторов.
-WRITE_INTENT = re.compile(
-    r"(?<![0-9<>])>>?(?![>])"                                  # перенаправление вывода
-    r"|\b(?:rm|rmdir|unlink|mv|cp|dd|truncate|shred|touch|mkdir|install|rsync|scp)\b"
-    r"|\b(?:tee|ln)\b"
-    r"|\b(?:chmod|chown|chgrp|xattr)\b"
-    r"|\bsed\b[^|;&]*\s-i\b|\bperl\b[^|;&]*\s-[a-z]*i[a-z]*\b"
-    r"|\bcurl\b[^|;&]*\s-(?:o|-output)\b|\bwget\b[^|;&]*\s-(?:O|-output-document)\b"
-    r"|\bgit\s+(?:clone|init|worktree\s+add)\b",
-    re.I)
-
-# Встроенный код нельзя разобрать регуляркой: если он упоминает путь наружу,
-# считаем это записью и отказываем. Ложный отказ дешевле пропущенной записи.
-INLINE_CODE = re.compile(
-    r"\b(?:python[\d.]*|python3)\s+-c\b|\bnode\s+-e\b|\bperl\s+-[a-z]*e\b"
-    r"|\bruby\s+-e\b|\bphp\s+-r\b|\bosascript\b|\bawk\b[^|;&]*\bprint\s*>",
-    re.I)
 
 ALWAYS_OK = ("/tmp", "/private/tmp", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/fd")
 

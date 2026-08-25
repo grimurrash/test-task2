@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
@@ -42,12 +43,12 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m wip"}}, "deny"),
     ("guard-git.py", "переписывание истории",
      {"tool_name": "Bash", "tool_input": {"command": "git filter-branch --tree-filter true HEAD"}}, "deny"),
-    ("guard-git.py", "прямой push в main — спросить",
-     {"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}, "ask"),
+    ("guard-git.py", "прямой push в main без пропуска",
+     {"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}, "deny"),
     ("guard-git.py", "ветка по соглашению разрешена исключением",
      {"tool_name": "Bash", "tool_input": {"command": "git checkout -b feature/payments"}}, "allow"),
-    ("guard-git.py", "ветка вне соглашения — спросить",
-     {"tool_name": "Bash", "tool_input": {"command": "git checkout -b hotfix-temp"}}, "ask"),
+    ("guard-git.py", "ветка вне соглашения без пропуска",
+     {"tool_name": "Bash", "tool_input": {"command": "git checkout -b hotfix-temp"}}, "deny"),
     ("guard-git.py", "push в рабочую ветку разрешён",
      {"tool_name": "Bash", "tool_input": {"command": "git push origin feature/payments"}}, "allow"),
     ("guard-git.py", "обычный коммит разрешён",
@@ -86,12 +87,28 @@ CASES = [
     ("guard-scope.py", "работа внутри репозитория не мешается",
      {"tool_name": "Bash", "tool_input": {"command": "mkdir -p docs/plans && touch docs/plans/x.md"}}, "allow"),
 
-    ("guard-protected-files.py", "правка настроек хуков — спросить",
-     {"tool_name": "Edit", "tool_input": {"file_path": ROOT + "/.claude/settings.json"}}, "ask"),
-    ("guard-protected-files.py", "правка конфигурации CI — спросить",
-     {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/.github/workflows/ci.yml"}}, "ask"),
+    ("guard-protected-files.py", "правка настроек хуков без пропуска",
+     {"tool_name": "Edit", "tool_input": {"file_path": ROOT + "/.claude/settings.json"}}, "deny"),
+    ("guard-protected-files.py", "правка конфигурации CI без пропуска",
+     {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/.github/workflows/ci.yml"}}, "deny"),
     ("guard-protected-files.py", "правка обычного файла разрешена",
      {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/docs/plan.md"}}, "allow"),
+
+    # --- Дыра от 2026-08-25: защита висела только на Write и Edit ---
+    ("guard-protected-files.py", "правка хука через sed -i",
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i '' s/x/y/ .claude/hooks/guard-git.py"}}, "deny"),
+    ("guard-protected-files.py", "перезапись настроек через перенаправление",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{}' > .claude/settings.json"}}, "deny"),
+    ("guard-protected-files.py", "правка правил встроенным кодом",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"open('CLAUDE.md','w').write('')\""}}, "deny"),
+    ("guard-protected-files.py", "обходной путь к хуку не помогает",
+     {"tool_name": "Bash", "tool_input": {"command": "rm ./docs/../.claude/hooks/guard-scope.py"}}, "deny"),
+    ("guard-protected-files.py", "выдача пропуска из сессии агента",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh protected-files 60 'надо'"}}, "deny"),
+    ("guard-protected-files.py", "чтение защищённого файла разрешено",
+     {"tool_name": "Bash", "tool_input": {"command": "cat .claude/settings.json"}}, "allow"),
+    ("guard-protected-files.py", "прогон тестов не считается правкой",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 scripts/test_hooks.py"}}, "allow"),
 ]
 
 INJECTION_CASE = {
@@ -136,6 +153,63 @@ def main():
               % ("✓" if ok else "✗", title, expected, got))
         if not ok and proc.stderr:
             print("        stderr: %s" % proc.stderr.strip()[:200])
+
+    # Пропуск: разрешение выдаётся заранее, привязано к зоне и сгорает по времени.
+    # Проверяется не только что он открывает, но и что он НЕ открывает.
+    print("\n  пропуск с истечением")
+    unlock_path = os.path.join(ROOT, ".claude", "state", "unlock.json")
+    log_path = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
+    saved_unlock = None
+    if os.path.exists(unlock_path):
+        with open(unlock_path, encoding="utf-8") as fh:
+            saved_unlock = fh.read()
+
+    now = time.time()
+    live = {"until": now + 600, "human_until": "тест", "reason": "проверка"}
+    stale = {"until": now - 600, "human_until": "тест", "reason": "проверка"}
+    edit_settings = ("guard-protected-files.py",
+                     {"tool_name": "Edit", "tool_input": {"file_path": ROOT + "/.claude/settings.json"}})
+    make_branch = ("guard-git.py",
+                   {"tool_name": "Bash", "tool_input": {"command": "git checkout -b hotfix-temp"}})
+    issue_unlock = ("guard-protected-files.py",
+                    {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh protected-files 60"}})
+
+    unlock_cases = [
+        ("открытая зона пропускает правку правил", {"protected-files": live}, edit_settings, "allow"),
+        ("просроченный пропуск не действует", {"protected-files": stale}, edit_settings, "deny"),
+        ("пропуск чужой зоны не открывает эту", {"git-branch": live}, edit_settings, "deny"),
+        ("своя зона открывает свою операцию", {"git-branch": live}, make_branch, "allow"),
+        ("по пропуску нельзя выдать себе пропуск", {"protected-files": live}, issue_unlock, "deny"),
+    ]
+    for title, zones, (hook, payload), expected in unlock_cases:
+        os.makedirs(os.path.dirname(unlock_path), exist_ok=True)
+        with open(unlock_path, "w", encoding="utf-8") as fh:
+            json.dump(zones, fh, ensure_ascii=False)
+        got = decision_of(run(hook, payload))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-45s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
+
+    # Открытая зона без следа в журнале — дыра, а не удобство.
+    log_size = os.path.getsize(log_path) if os.path.exists(log_path) else 0
+    with open(unlock_path, "w", encoding="utf-8") as fh:
+        json.dump({"protected-files": live}, fh, ensure_ascii=False)
+    run(*edit_settings)
+    tail = ""
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as fh:
+            fh.seek(log_size)
+            tail = fh.read()
+    ok = "unlock-used" in tail
+    failures += 0 if ok else 1
+    print("    %s использование пропуска записано в журнал" % ("✓" if ok else "✗"))
+
+    if saved_unlock is None:
+        if os.path.exists(unlock_path):
+            os.remove(unlock_path)
+    else:
+        with open(unlock_path, "w", encoding="utf-8") as fh:
+            fh.write(saved_unlock)
 
     print("\n  scan-untrusted.py")
     proc = run("scan-untrusted.py", INJECTION_CASE)
