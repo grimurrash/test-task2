@@ -226,9 +226,9 @@ select.control {
   background: var(--color-ink); color: var(--color-code-text);
   border-radius: var(--radius-small);
   font-family: var(--font-family-mono); font-size: var(--font-size-caption);
-  white-space: pre; overflow-x: auto; line-height: 1.7;
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7;
 }
-.payload em { font-style: normal; color: #9ec1f7; background: rgba(79, 108, 176, 0.35); border-radius: 2px; }
+.payload em { font-style: normal; color: var(--color-code-highlight); background: var(--color-code-highlight-bg); border-radius: 2px; }
 
 .group {
   position: relative;
@@ -379,7 +379,7 @@ select.control {
         </button>
         <button class="scenario" type="button">
           <span class="name">Две одновременные отправки<small>ровно один платёж</small></span>
-          <span class="expect expect--201">201</span><span class="expect expect--409">409</span>
+          <span class="expect expect--201">201</span><span class="expect expect--409">200/409</span>
         </button>
         <button class="scenario" type="button">
           <span class="name">Двойная отмена<small>отмена идемпотентна</small></span>
@@ -475,6 +475,8 @@ select.control {
             <span class="chip chip--errcode">request_in_progress</span>
             <span>Запрос с этим ключом уже в полёте. Второй платёж не создан.</span>
           </div>
+          <p class="note">По контракту проигравший может получить и 200 с тем же платежом —
+          здесь показан исход с 409; второго id не бывает ни в одном из них.</p>
         </article>
         <article class="entry entry--created">
           <div class="entry-head">
