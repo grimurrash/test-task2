@@ -203,6 +203,17 @@ def decision_of(proc):
         return "allow"
     return data.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
 
+def gate_blocked(proc):
+    """gate-quality (Stop) отвечает не в формате PreToolUse: пусто — не
+    блокирует, {"decision": "block", ...} — блокирует."""
+    out = (proc.stdout or "").strip()
+    if not out:
+        return False
+    try:
+        return json.loads(out).get("decision") == "block"
+    except json.JSONDecodeError:
+        return False
+
 def make_repo(branch):
     """Временный git-репозиторий с HEAD на заданной ветке — для проверки
     guard-git по факту (issue #20), а не по подстановке в текст команды.
@@ -502,7 +513,10 @@ def main():
         ok = os.path.exists(state_path)
         if ok:
             with open(state_path, encoding="utf-8") as fh:
-                ok = "tests" in json.load(fh)
+                # issue #33: запись живёт под ключом session_id внутри "sessions",
+                # не плоским "tests" на верхнем уровне. Платёж без session_id
+                # в payload пишется под "unknown" — H.project_dir() и всё.
+                ok = "tests" in json.load(fh).get("sessions", {}).get("unknown", {})
         failures += 0 if ok else 1
         print("    %s %s" % ("✓" if ok else "✗", title))
 
@@ -533,11 +547,80 @@ def main():
         got = None
         if os.path.exists(state_path):
             with open(state_path, encoding="utf-8") as fh:
-                got = json.load(fh).get("tests", {}).get("failed")
+                got = json.load(fh).get("sessions", {}).get("unknown", {}).get("tests", {}).get("failed")
         ok = got == expected
         failures += 0 if ok else 1
         print("    %s %-48s ожидали failed=%-5s получили %s"
               % ("✓" if ok else "✗", title, expected, got))
+
+    # issue #33: две сессии пишут один verify.json — запись одной не должна
+    # затирать запись другой. Раньше плоский ключ "tests" был один на всех.
+    if os.path.exists(state_path):
+        os.remove(state_path)
+    run("mark-verify.py", {"session_id": "session-a", "tool_name": "Bash",
+                           "tool_input": {"command": "python3 scripts/test_hooks.py"},
+                           "tool_response": {"stdout": "OK", "is_error": False}})
+    run("mark-verify.py", {"session_id": "session-b", "tool_name": "Bash",
+                           "tool_input": {"command": "npm test"},
+                           "tool_response": {"stdout": "1 failed, 4 passed", "is_error": False}})
+    ok = False
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as fh:
+            sessions = json.load(fh).get("sessions", {})
+        ok = (sessions.get("session-a", {}).get("tests", {}).get("failed") is False
+              and sessions.get("session-b", {}).get("tests", {}).get("failed") is True)
+    failures += 0 if ok else 1
+    print("    %s %s" % ("✓" if ok else "✗",
+                          "запись session-b (красная) не затёрла и не покрасила session-a (зелёную)"))
+
+    print("\n  gate-quality.py — verify.json по session_id, не по каталогу (issue #33)")
+    # gate-quality раньше не тестировался вовсе. Нужен настоящий git-репозиторий:
+    # хук отказывается работать без .git и считает git status/mtime исходников.
+    gate_repo = make_repo("main")
+    try:
+        with open(os.path.join(gate_repo, ".gitignore"), "w", encoding="utf-8") as fh:
+            fh.write(".claude/\n")
+        with open(os.path.join(gate_repo, "dummy.py"), "w", encoding="utf-8") as fh:
+            fh.write("# исходник — для code_ts, mtime которого сравнивается с прогоном\n")
+        subprocess.run(["git", "-C", gate_repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", gate_repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "source"], check=True)
+
+        gate_verify_path = os.path.join(gate_repo, ".claude", "state", "verify.json")
+        os.makedirs(os.path.dirname(gate_verify_path), exist_ok=True)
+        now = time.time()
+        with open(gate_verify_path, "w", encoding="utf-8") as fh:
+            json.dump({"sessions": {
+                "session-a": {"tests": {"ts": now, "human_ts": "x",
+                                        "command": "npm test", "failed": True}},
+                "session-b": {"tests": {"ts": now, "human_ts": "x",
+                                        "command": "npm test", "failed": False}},
+            }}, fh)
+
+        gate_cases = [
+            ("session-a", True, "своя красная запись блокирует"),
+            ("session-b", False, "чужой (session-a) красный прогон не красит чистую session-b"),
+            ("session-c", True, "сессия без единой записи — «тесты не запускались»"),
+        ]
+        gate_marker = os.path.join(gate_repo, ".claude", "state", "gate-last-block.json")
+        for sid, expected_block, title in gate_cases:
+            # У gate-quality свой дедуп: повтор той же подписи в том же
+            # каталоге в течение 10 минут не блокирует повторно. Без сброса
+            # маркера между кейсами второй и третий вызов молчали бы по
+            # дедупу, а не по факту изоляции сессий — маскируя как раз то,
+            # что этот блок проверяет.
+            if os.path.exists(gate_marker):
+                os.remove(gate_marker)
+            proc = run("gate-quality.py",
+                      {"session_id": sid, "cwd": gate_repo, "stop_hook_active": False},
+                      project_dir=gate_repo)
+            blocked = gate_blocked(proc)
+            ok = blocked == expected_block
+            failures += 0 if ok else 1
+            print("    %s %-62s ожидали блок=%-5s получили %s"
+                  % ("✓" if ok else "✗", title, expected_block, blocked))
+    finally:
+        shutil.rmtree(gate_repo, ignore_errors=True)
 
     # Состояние возвращается таким, каким было до проверки: тест не имеет права
     # оставлять после себя отметку о прогоне, которого не было.
