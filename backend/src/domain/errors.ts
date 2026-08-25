@@ -72,12 +72,14 @@ export const idempotencyKeyRequired = (): ApiError =>
     'Заголовок Idempotency-Key обязателен при создании платежа: непустая строка до 255 символов',
   );
 
-export const invalidIdempotencyKey = (): ApiError =>
-  new ApiError(
-    400,
-    'invalid_idempotency_key',
-    'Idempotency-Key не должен быть длиннее 255 символов',
-  );
+/**
+ * Причина называется в сообщении. Отказ 400 полезен ровно тем, что приходит
+ * немедленно и к тому, кто может починить запрос, — а «слишком длинный»
+ * на дубле заголовка уводит от настоящей причины и отнимает у клиента то самое
+ * время, ради экономии которого отказ и выдан.
+ */
+export const invalidIdempotencyKey = (reason: string): ApiError =>
+  new ApiError(400, 'invalid_idempotency_key', `Idempotency-Key не принят: ${reason}`);
 
 export const malformedRequest = (reason: string): ApiError =>
   new ApiError(400, 'malformed_request', `Тело запроса не разобрано: ${reason}`);
