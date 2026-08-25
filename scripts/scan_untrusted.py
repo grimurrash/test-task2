@@ -80,11 +80,21 @@ COMPILED = [(re.compile(p, re.I), h) for p, h in PHRASES]
 SAMPLE_MARKER = "scan-untrusted: allow-samples"
 MARKER_WINDOW = 2048
 
-# .worktrees — рабочие копии ролей. Внутри каждой лежит полная копия репозитория,
-# включая файлы с намеренными образцами инъекций; без пропуска сканер находил бы
-# их снова и снова и возвращал ненулевой код на здоровом дереве.
-SKIP_DIRS = {".git", ".worktrees", "node_modules", "vendor", ".venv", "venv",
-             "dist", "build", "__pycache__", ".claude/logs"}
+# Каталоги, в которые не ходим. Сравнение — по имени каталога.
+#
+# Рабочие копии ролей лежат в двух местах: наша `.worktrees/` и `.claude/worktrees/`,
+# которую заводит платформа. Внутри каждой — полный дубль репозитория; без пропуска
+# сканер проверял бы одно и то же по многу раз. Размен назван вслух в docs/HOOKS.md:
+# копия пропускается потому, что оригинал сканируется, — но файл, которого
+# в оригинале нет, проверку не пройдёт.
+SKIP_DIRS = {".git", ".worktrees", "worktrees", "node_modules", "vendor",
+             ".venv", "venv", "dist", "build", "__pycache__"}
+
+# Пути от корня сканирования — для случаев, когда имя каталога само по себе
+# слишком общее, чтобы пропускать его везде. `.claude/logs` раньше стоял
+# в SKIP_DIRS и не работал никогда: там сравнивается имя каталога (`logs`),
+# а не путь. Тот же класс ошибки, что и пропуск файлов по basename (issue #42).
+SKIP_REL_PATHS = {os.path.join(".claude", "logs")}
 TEXT_EXT = {".md", ".txt", ".json", ".yml", ".yaml", ".html", ".htm", ".csv", ".xml",
             ".js", ".ts", ".py", ".php", ".go", ".sh", ".toml", ".ini", ".cfg", ".sql"}
 
@@ -115,7 +125,12 @@ def scan_path(root, skipped=None):
     hits = []
     skipped = skipped if skipped is not None else []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in SKIP_DIRS
+            and os.path.normpath(os.path.join(rel_dir, d)) not in SKIP_REL_PATHS
+        ]
         for name in filenames:
             path = os.path.join(dirpath, name)
             if os.path.splitext(name)[1].lower() not in TEXT_EXT:

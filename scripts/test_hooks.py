@@ -427,6 +427,49 @@ def main():
         failures += 0 if ok else 1
         print("    %s %s" % ("✓" if ok else "✗",
                               "сосед без маркера сканируется, пропуск не расползается на каталог"))
+
+        # Второй дефект из #42, найденный проджектом: пропуск сравнивался
+        # с basename, поэтому ЛЮБОЙ файл с именем test_hooks.py или
+        # scan_untrusted.py выпадал из проверки — в том числе пришедший извне,
+        # из скачанного репозитория или чужого PR. Маркер в содержимом
+        # закрывает это по построению, но проверяется отдельно: «закрыто
+        # по построению» без прогона — это намерение, а не защита.
+        alien = os.path.join(sample_dir, "downloaded-repo", "scripts")
+        os.makedirs(alien, exist_ok=True)
+        for name in ("test_hooks.py", "scan_untrusted.py"):
+            with open(os.path.join(alien, name), "w", encoding="utf-8") as fh:
+                fh.write("const x = '%s';\n" % SAMPLE)
+        proc = subprocess.run([sys.executable, SCANNER, alien],
+                              capture_output=True, text=True, timeout=30)
+        ok = (proc.returncode == 1
+              and "test_hooks.py" in proc.stdout
+              and "scan_untrusted.py" in proc.stdout
+              and "пропущены файлы" not in proc.stdout)
+        failures += 0 if ok else 1
+        print("    %s %s" % ("✓" if ok else "✗",
+                              "чужой файл с «нашим» именем без маркера — находка, не пропуск"))
+
+        # Третий пункт оттуда же: платформа заводит .claude/worktrees/ помимо
+        # нашей .worktrees/ — в обе сканер ходить не должен, иначе проверяет
+        # полный дубль репозитория. Плюс `.claude/logs` в SKIP_DIRS не работал
+        # никогда: там сравнивается имя каталога, а не путь.
+        skip_cases = [
+            (os.path.join(".claude", "worktrees", "copy"), "копия платформы (.claude/worktrees)"),
+            (os.path.join(".worktrees", "psp-x"), "копия роли (.worktrees)"),
+            (os.path.join(".claude", "logs"), "журналы (.claude/logs — путь, а не имя)"),
+        ]
+        for rel, title in skip_cases:
+            d = os.path.join(sample_dir, rel)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "dup.ts"), "w", encoding="utf-8") as fh:
+                fh.write("const x = '%s';\n" % SAMPLE)
+        proc = subprocess.run([sys.executable, SCANNER, sample_dir],
+                              capture_output=True, text=True, timeout=30)
+        for rel, title in skip_cases:
+            ok = rel not in proc.stdout
+            failures += 0 if ok else 1
+            print("    %s %-70s %s" % ("✓" if ok else "✗", "не сканируется: " + title,
+                                        "пропущено" if ok else "ЗАШЁЛ"))
     finally:
         shutil.rmtree(sample_dir, ignore_errors=True)
 
