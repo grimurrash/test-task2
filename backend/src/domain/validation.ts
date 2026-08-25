@@ -41,15 +41,31 @@ const IDEMPOTENCY_KEY_MAX = 255;
 const ORDER_ID_MAX = 64;
 const DESCRIPTION_MAX = 512;
 
-/** Заголовок мог прийти дважды — тогда Node склеивает значения. */
-function headerValue(raw: string | string[] | undefined): string | undefined {
-  if (raw === undefined) return undefined;
-  return Array.isArray(raw) ? raw.join(', ') : raw;
+/**
+ * Длина значения заголовка в символах.
+ *
+ * Node отдаёт значение заголовка декодированным побайтно (latin-1), поэтому
+ * `value.length` — это число БАЙТ, а не символов: кириллическая буква весит
+ * два, эмодзи четыре. Контракт меряет символы, и ключ из 128 кириллических
+ * букв отвергался как «длиннее 255». Находка QA #75 — тот же класс, что #64,
+ * но третья единица измерения: там кодовые единицы UTF-16, здесь байты UTF-8.
+ */
+function headerCharLength(value: string): number {
+  return [...Buffer.from(value, 'latin1').toString('utf8')].length;
 }
 
-export function requireMerchantId(raw: string | string[] | undefined): string {
-  const value = headerValue(raw);
+/**
+ * Заголовок, присланный дважды, — не одно значение и не склейка из двух.
+ *
+ * Node склеивает повторы через запятую. Для `X-Merchant-Id` склейка выпадала
+ * из набора и потому давала 400 — но по совпадению, а не по устройству.
+ * У `Idempotency-Key` набор шире, склейка проходила проверку, и на один ключ
+ * рождались два платежа (#73). Теперь дубль отвергается явно у обоих.
+ */
+export function requireMerchantId(values: string[]): string {
+  const value = values[0];
   if (value === undefined) throw merchantIdRequired();
+  if (values.length > 1) throw invalidMerchantId();
   if (!MERCHANT_ID_PATTERN.test(value)) throw invalidMerchantId();
   return value;
 }
@@ -59,10 +75,12 @@ export function requireMerchantId(raw: string | string[] | undefined): string {
  * отдельный код: пробел B ревью контракта закрыт правкой (#32, PR #38),
  * симметрично `invalid_merchant_id`.
  */
-export function requireIdempotencyKey(raw: string | string[] | undefined): string {
-  const value = headerValue(raw);
+export function requireIdempotencyKey(values: string[]): string {
+  const value = values[0];
   if (value === undefined || value.length === 0) throw idempotencyKeyRequired();
-  if (value.length > IDEMPOTENCY_KEY_MAX) throw invalidIdempotencyKey();
+  if (values.length > 1) throw invalidIdempotencyKey('заголовок прислан несколько раз');
+  if (headerCharLength(value) > IDEMPOTENCY_KEY_MAX)
+    throw invalidIdempotencyKey(`длина превышает ${IDEMPOTENCY_KEY_MAX} символов`);
   return value;
 }
 

@@ -55,6 +55,26 @@ interface Route {
 }
 
 /**
+ * Все значения заголовка по отдельности, а не склейка.
+ *
+ * `req.headers` склеивает повторы через запятую, и приложение видит `"K, K"`
+ * как один ключ — честный повтор с тем же `K` в него не попадает, и на один
+ * ключ рождаются два платежа. Отказ ровно того свойства, ради которого написан
+ * сервис. Находка QA #73.
+ *
+ * `rawHeaders` — плоский массив «имя, значение, имя, значение», где повторы
+ * сохранены. Только по нему видно, что заголовок прислан дважды.
+ */
+function headerValues(req: http.IncomingMessage, lowerName: string): string[] {
+  const values: string[] = [];
+  const raw = req.rawHeaders;
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    if (raw[i]?.toLowerCase() === lowerName) values.push(raw[i + 1] ?? '');
+  }
+  return values;
+}
+
+/**
  * Битое процентное кодирование (`%zz`) — не повод для отказа сервера: такой
  * идентификатор просто не может существовать, и маршрут обязан дойти
  * до обычного 404. Раньше `decodeURIComponent` бросал прямо из разбора пути,
@@ -103,8 +123,8 @@ function matchRoute(pathname: string, method: string): Route | { allow: string[]
  * «сервис отверг запрос» от «сервис упал». Тот же довод, по которому CORS
  * обязателен на ответах 4xx, — иначе браузер показывает не отказ, а обрыв.
  *
- * Поэтому чтение прекращается, но соединение живёт до конца ответа; сокет
- * закрывается уже после того, как ответ ушёл (см. `res.on('finish')`).
+ * Поэтому тело дочитывается и отбрасывается — соединение остаётся целым,
+ * а ответ уходит полностью. Рвётся оно только за пределом дочитывания.
  */
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -171,13 +191,11 @@ export function createServer(deps: AppDeps = {}): http.Server {
   }
 
   const server = http.createServer((req, res) => {
-    // Недочитанный запрос закрывается только после того, как ответ ушёл:
-    // порядок обратный рвёт соединение раньше ответа, и клиент видит обрыв
-    // вместо отказа API. Находка ревью #47 на теле сверх предела.
-    res.on('finish', () => {
-      if (!req.readableEnded) req.destroy();
-    });
-
+    // Здесь стоял `res.on('finish') → req.destroy()`, оставшийся от первой
+    // версии правки #56. После перехода на дочитывание он стал не нужен
+    // и вреден: запрос БЕЗ тела никто не читает, поэтому readableEnded у него
+    // ложь, и соединение рвалось после каждого ответа. Тесты этого не видели —
+    // клиент молча переподключается. Найдено при разборе #74.
     void handle(req, res).catch((error: unknown) => {
       // Контракт объявляет 5xx своей границей: формат тела не гарантируется.
       // Конверт 5.4 держим всё равно — клиенту от «границы контракта» не легче.
@@ -201,7 +219,11 @@ export function createServer(deps: AppDeps = {}): http.Server {
       return;
     }
 
-    const route = matchRoute(pathname, method);
+    // HEAD обязан зеркалить GET везде, где GET есть (RFC 9110 §9.3.2):
+    // так его шлют браузеры и кэширующие прокси. Тело Node отбросит сам,
+    // заголовки — включая Content-Type — обязаны совпадать с GET.
+    // Находка QA #74.
+    const route = matchRoute(pathname, method === 'HEAD' ? 'GET' : method);
     if (route === null) {
       send(res, 404, { error: { code: 'not_found', message: 'Маршрут не найден' } });
       return;
@@ -219,11 +241,11 @@ export function createServer(deps: AppDeps = {}): http.Server {
     try {
       // Пробел D ревью контракта: порядок проверок контрактом не задан.
       // Заголовки проверяются раньше тела, мерчант — раньше ключа.
-      const merchantId = requireMerchantId(req.headers['x-merchant-id']);
+      const merchantId = requireMerchantId(headerValues(req, 'x-merchant-id'));
 
       switch (route.kind) {
         case 'create': {
-          const key = requireIdempotencyKey(req.headers['idempotency-key']);
+          const key = requireIdempotencyKey(headerValues(req, 'idempotency-key'));
           const raw = await readBody(req);
           const command = validateCreateBody(parseBody(raw, req.headers['content-type']));
           const result = await service.create(merchantId, key, command);
