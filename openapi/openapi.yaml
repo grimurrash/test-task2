@@ -76,16 +76,18 @@ info:
 
     `code` — машиночитаемый код из перечня ниже, `message` — человекочитаемое
     пояснение, `details` — необязательный объект с дополнительными данными.
-    Для `validation_failed` в `details.errors` лежит карта «поле → нарушение».
+
+    Разделение статусов — по RFC 9110: **400** — проблема формы запроса
+    (заголовки), **422** — запрос разобран, но поля тела не проходят проверку.
+    Вся валидация тела отвечает одним кодом `validation_failed`; в
+    `details.errors` — карта «поле → нарушение» со **всеми** нарушениями разом.
 
     | Код | HTTP | Когда |
     |---|---|---|
     | `merchant_id_required` | 400 | любой запрос без заголовка `X-Merchant-Id` |
     | `invalid_merchant_id` | 400 | `X-Merchant-Id` пустой, длиннее 64 символов или вне набора `[A-Za-z0-9._-]` |
     | `idempotency_key_required` | 400 | создание платежа без заголовка `Idempotency-Key` или с пустым значением |
-    | `invalid_amount` | 400 | `amount_minor` — ноль, отрицательное, дробное, строка или за границей безопасного целого |
-    | `invalid_currency` | 400 | `currency` вне перечня `RUB`, `USD`, `EUR`; регистр строгий |
-    | `validation_failed` | 422 | `order_id` или `description` нарушают границы; карта нарушений — в `details.errors` |
+    | `validation_failed` | 422 | поля тела не прошли проверку: `amount_minor` (ноль, отрицательное, дробное, строка, за границей безопасного целого), `currency` (вне `RUB`/`USD`/`EUR`, регистр строгий), `order_id`, `description`; карта нарушений — в `details.errors` |
     | `idempotency_key_reuse` | 409 | тот же `Idempotency-Key` с другим телом запроса |
     | `request_in_progress` | 409 | повтор, пока первый запрос с этим ключом ещё обрабатывается |
     | `payment_not_found` | 404 | платёж не существует или принадлежит другому мерчанту |
@@ -224,9 +226,7 @@ paths:
                     description: Подписка на тариф «Про», август
                     created_at: '2026-08-25T12:34:56.000Z'
         '400':
-          description: >-
-            Отсутствует или невалиден обязательный заголовок, либо `amount_minor`
-            или `currency` не прошли проверку.
+          description: Отсутствует или невалиден обязательный заголовок.
           content:
             application/json:
               schema:
@@ -252,20 +252,6 @@ paths:
                       message: >-
                         X-Merchant-Id должен быть непустой строкой до 64 символов
                         из набора A–Z a–z 0–9 . _ -
-                invalid_amount:
-                  summary: Сумма не прошла проверку
-                  value:
-                    error:
-                      code: invalid_amount
-                      message: >-
-                        amount_minor должен быть целым числом больше нуля
-                        в минорных единицах валюты
-                invalid_currency:
-                  summary: Валюта вне белого списка
-                  value:
-                    error:
-                      code: invalid_currency
-                      message: 'currency должен быть одним из: RUB, USD, EUR (регистр строгий)'
         '409':
           description: >-
             Конфликт ключа идемпотентности: тот же ключ с другим телом, либо
@@ -293,30 +279,33 @@ paths:
                         повторите попытку позже
         '422':
           description: >-
-            `order_id` или `description` нарушают границы. Карта нарушений —
-            в `details.errors`: ключ — имя поля, значение — описание нарушения.
+            Тело запроса разобрано, но поля не прошли проверку: `amount_minor`,
+            `currency`, `order_id` или `description`. Карта нарушений — в
+            `details.errors`: ключ — имя поля, значение — описание нарушения;
+            перечисляются все нарушения разом.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               examples:
                 validation_failed:
-                  summary: order_id длиннее 64 символов
+                  summary: Сумма не прошла проверку
                   value:
                     error:
                       code: validation_failed
                       message: Тело запроса не прошло валидацию
                       details:
                         errors:
-                          order_id: длина превышает 64 символа
+                          amount_minor: целое строго больше нуля
                 validation_failed_multiple:
-                  summary: Несколько полей сразу
+                  summary: Несколько полей сразу — все нарушения одним ответом
                   value:
                     error:
                       code: validation_failed
                       message: Тело запроса не прошло валидацию
                       details:
                         errors:
+                          currency: 'вне списка RUB, USD, EUR (регистр строгий)'
                           order_id: не должен быть пустым
                           description: длина превышает 512 символов
     get:
@@ -641,16 +630,16 @@ components:
           type: integer
           description: >-
             Сумма в минорных единицах валюты, целое строго больше нуля, не выше
-            границы безопасного целого (2^53 − 1). Иначе — 400 `invalid_amount`.
-            Суммы с `amount_minor % 100 == 1` или `== 2` — триггеры правила
-            тестовых сумм (включая суммы `1` и `2`).
+            границы безопасного целого (2^53 − 1). Иначе — 422
+            `validation_failed`. Суммы с `amount_minor % 100 == 1` или `== 2` —
+            триггеры правила тестовых сумм (включая суммы `1` и `2`).
           minimum: 1
           maximum: 9007199254740991
           examples:
             - 125000
         currency:
           type: string
-          description: Код валюты; регистр строгий, иначе — 400 `invalid_currency`.
+          description: Код валюты; регистр строгий, иначе — 422 `validation_failed`.
           enum:
             - RUB
             - USD
@@ -693,8 +682,6 @@ components:
         - merchant_id_required
         - invalid_merchant_id
         - idempotency_key_required
-        - invalid_amount
-        - invalid_currency
         - validation_failed
         - idempotency_key_reuse
         - request_in_progress
