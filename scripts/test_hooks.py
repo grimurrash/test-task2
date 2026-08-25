@@ -9,8 +9,10 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -194,6 +196,24 @@ def decision_of(proc):
         return "allow"
     return data.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
 
+def make_repo(branch):
+    """Временный git-репозиторий с HEAD на заданной ветке — для проверки
+    guard-git по факту (issue #20), а не по подстановке в текст команды.
+    Вызывающий отвечает за shutil.rmtree после использования.
+    """
+    d = tempfile.mkdtemp(prefix="guard-git-head-")
+    subprocess.run(["git", "init", "-q", "-b", branch, d], check=True)
+    subprocess.run(
+        ["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    return d
+
+def run_git(cwd, cmd):
+    return run("guard-git.py", {"tool_name": "Bash",
+                                "tool_input": {"command": cmd}, "cwd": cwd})
+
 def main():
     failures = 0
     print("Проверка хуков. Корень проекта: %s\n" % ROOT)
@@ -309,6 +329,50 @@ def main():
     ok = proc.stdout.strip() == ""
     failures += 0 if ok else 1
     print("    %s %s" % ("✓" if ok else "✗", "gh issue view без инъекций — тишина"))
+
+    print("\n  guard-git.py — push по HEAD, а не по тексту (issue #20)")
+    # Голый push и его формы называют ветку не написанным текстом, а фактом —
+    # HEAD рабочего дерева, где выполнится команда. Регулярка это не увидит
+    # никаким перечислением форм; нужен настоящий git-репозиторий с управляемым
+    # HEAD, а не текстовая заглушка.
+    main_repo = make_repo("main")
+    feat_repo = make_repo("feature/x")
+    try:
+        head_cases = [
+            ("main", "git push", "deny", "голый push при HEAD на main"),
+            ("main", "git push origin HEAD", "deny", "push origin HEAD при HEAD на main"),
+            ("main", "git push --all", "deny", "push --all при HEAD на main"),
+            ("main", "git push -u origin @", "deny", "push -u origin @ при HEAD на main"),
+            ("main", "git push origin", "deny", "push только с именем remote при HEAD на main"),
+            ("main", "git push origin feature/x", "allow",
+             "явно другая ветка — не HEAD, разрешено независимо от HEAD"),
+            ("main", "git push origin feature/x:main", "deny",
+             "push не с HEAD, но адресат main — ловит проверка по имени ветки"),
+            ("main", "git push origin abc123def:main", "deny",
+             "push sha в main — тот же случай, ловит проверка по имени ветки"),
+            ("main", "echo done && git push", "deny", "голый push в составной команде после &&"),
+            ("main", "git add -A\ngit commit -m x\ngit push", "deny",
+             "голый push третьей строкой настоящей многострочной команды"),
+            ("main", 'git commit -m "note: git push origin main needs a PR"', "allow",
+             "push в тексте сообщения коммита — не команда"),
+            ("main", "cat > /tmp/gg-note.txt <<'EOF'\nbug: git push origin main\nEOF",
+             "allow", "push внутри тела heredoc — не команда"),
+            ("main", "cat > /tmp/gg-note.txt <<'EOF'\nbug: git push origin main\nEOF\necho done",
+             "allow", "то же, с командой после закрытия heredoc"),
+            ("feature/x", "git push", "allow", "голый push при HEAD на рабочей ветке проходит"),
+            ("feature/x", "git push origin feature/x", "allow", "адресный push с рабочей ветки"),
+            ("feature/x", "git push origin HEAD", "allow", "push origin HEAD с рабочей ветки"),
+        ]
+        for branch, cmd, expected, title in head_cases:
+            cwd = main_repo if branch == "main" else feat_repo
+            got = decision_of(run_git(cwd, cmd))
+            ok = got == expected
+            failures += 0 if ok else 1
+            print("    %s %-62s ожидали %-5s получили %s"
+                  % ("✓" if ok else "✗", title, expected, got))
+    finally:
+        shutil.rmtree(main_repo, ignore_errors=True)
+        shutil.rmtree(feat_repo, ignore_errors=True)
 
     print("\n  mark-verify.py")
     state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
