@@ -71,6 +71,7 @@ export function RequestForm(props: {
           id="order"
           className={`control mono${fieldErrors.order_id ? ' control--error' : ''}`}
           value={form.orderId}
+          maxLength={64}
           onChange={(e) => set({ orderId: e.target.value })}
           aria-invalid={Boolean(fieldErrors.order_id)}
         />

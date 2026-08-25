@@ -131,8 +131,10 @@ select.control {
 .control--error { border-color: var(--input-border-error); background: var(--input-bg-error); }
 .field .error-text { font-size: var(--font-size-caption); color: var(--color-error); margin-top: var(--space-1); }
 .mono { font-family: var(--font-family-mono); }
-/* Ключ и кнопка генерации — двумя строками: UUID виден целиком */
-.keyrow .control { min-width: 0; font-size: var(--font-size-caption); }
+/* Ключ и кнопка генерации — двумя строками: UUID виден целиком.
+   Кегль overline: caption (12px) не вмещает 36 символов UUID в колонку 320 —
+   обещание макета «ключ виден целиком» важнее кегля подписи. */
+.keyrow .control { min-width: 0; font-size: var(--font-size-overline); }
 .keyrow .btn { display: block; width: 100%; margin-top: var(--space-2); }
 .counter { text-align: right; font-size: var(--font-size-caption); color: var(--color-text-faint); margin-top: var(--space-1); }
 
@@ -322,6 +324,9 @@ select.control {
   display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2);
   font-size: var(--font-size-caption); color: var(--color-text-muted);
 }
+/* order_id может быть 64 символа без пробелов (предел контракта) — переносится,
+   а не распирает карточку и страницу */
+.payment .meta > * { min-width: 0; overflow-wrap: anywhere; }
 .payment .desc {
   margin-top: var(--space-2); font-size: var(--font-size-small); color: var(--color-text);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;

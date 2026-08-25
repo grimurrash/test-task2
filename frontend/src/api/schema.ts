@@ -133,7 +133,7 @@ export interface components {
              */
             created_at: string;
         };
-        /** @description Тело запроса на создание платежа. */
+        /** @description Тело запроса на создание платежа. Поля сверх схемы запрещены (`additionalProperties: false`): неизвестное поле → 422 `validation_failed`. «Тем же телом» при повторе считается совпадение по разобранным полям, не по байтам. */
         PaymentCreateRequest: {
             /**
              * @description Сумма в минорных единицах валюты, целое строго больше нуля, не выше границы безопасного целого (2^53 − 1). Иначе — 422 `validation_failed`. Суммы с `amount_minor % 100 == 1` или `== 2` — триггеры правила тестовых сумм (включая суммы `1` и `2`).
@@ -165,7 +165,7 @@ export interface components {
          * @description Машиночитаемый код ошибки; полный перечень — в описании API.
          * @enum {string}
          */
-        ErrorCode: "merchant_id_required" | "invalid_merchant_id" | "idempotency_key_required" | "validation_failed" | "idempotency_key_reuse" | "request_in_progress" | "payment_not_found" | "payment_not_cancelable";
+        ErrorCode: "merchant_id_required" | "invalid_merchant_id" | "idempotency_key_required" | "invalid_idempotency_key" | "malformed_request" | "validation_failed" | "idempotency_key_reuse" | "request_in_progress" | "payment_not_found" | "payment_not_cancelable";
         /** @description Единый конверт ошибки. Для `validation_failed` в `details.errors` лежит карта «поле → описание нарушения». */
         Error: {
             error: {
@@ -205,7 +205,7 @@ export interface components {
     parameters: {
         /** @description Идентификатор мерчанта; обязателен на всех запросах. Непустая строка до 64 символов из набора `A–Z a–z 0–9 . _ -`. Заголовок отсутствует → 400 `merchant_id_required`; значение невалидно → 400 `invalid_merchant_id`. Ключи идемпотентности и видимость платежей скоупятся по мерчанту. */
         XMerchantId: string;
-        /** @description Ключ идемпотентности создания платежа; обязателен. Непустая строка от 1 до 255 символов, формат не навязывается — песочница генерирует UUID. Пустое значение приравнивается к отсутствию заголовка → 400 `idempotency_key_required`. Ключ действует ограниченное время — **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом возвращает 200 и тот же ресурс, повтор с другим телом — 409 `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт новый платёж. Ключ уникален в пределах мерчанта. */
+        /** @description Ключ идемпотентности создания платежа; обязателен. Непустая строка от 1 до 255 символов, формат не навязывается — песочница генерирует UUID. Пустое значение приравнивается к отсутствию заголовка → 400 `idempotency_key_required`; длиннее 255 символов → 400 `invalid_idempotency_key`. Ключ действует ограниченное время — **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом возвращает 200 и тот же ресурс, повтор с другим телом — 409 `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт новый платёж. Ключ уникален в пределах мерчанта. */
         IdempotencyKey: string;
         /** @description Идентификатор платежа, выданный сервисом при создании. */
         PaymentId: string;
@@ -246,7 +246,7 @@ export interface operations {
             header: {
                 /** @description Идентификатор мерчанта; обязателен на всех запросах. Непустая строка до 64 символов из набора `A–Z a–z 0–9 . _ -`. Заголовок отсутствует → 400 `merchant_id_required`; значение невалидно → 400 `invalid_merchant_id`. Ключи идемпотентности и видимость платежей скоупятся по мерчанту. */
                 "X-Merchant-Id": components["parameters"]["XMerchantId"];
-                /** @description Ключ идемпотентности создания платежа; обязателен. Непустая строка от 1 до 255 символов, формат не навязывается — песочница генерирует UUID. Пустое значение приравнивается к отсутствию заголовка → 400 `idempotency_key_required`. Ключ действует ограниченное время — **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом возвращает 200 и тот же ресурс, повтор с другим телом — 409 `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт новый платёж. Ключ уникален в пределах мерчанта. */
+                /** @description Ключ идемпотентности создания платежа; обязателен. Непустая строка от 1 до 255 символов, формат не навязывается — песочница генерирует UUID. Пустое значение приравнивается к отсутствию заголовка → 400 `idempotency_key_required`; длиннее 255 символов → 400 `invalid_idempotency_key`. Ключ действует ограниченное время — **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом возвращает 200 и тот же ресурс, повтор с другим телом — 409 `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт новый платёж. Ключ уникален в пределах мерчанта. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
@@ -276,7 +276,7 @@ export interface operations {
                     "application/json": components["schemas"]["Payment"];
                 };
             };
-            /** @description Отсутствует или невалиден обязательный заголовок. */
+            /** @description Отсутствует или невалиден обязательный заголовок, либо тело не разобрано как JSON-объект. Порядок проверок: `X-Merchant-Id` → `Idempotency-Key` → разбор тела; ответ — первый непройденный слой. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -294,7 +294,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Тело запроса разобрано, но поля не прошли проверку: `amount_minor`, `currency`, `order_id` или `description`. Карта нарушений — в `details.errors`: ключ — имя поля, значение — описание нарушения; перечисляются все нарушения разом. */
+            /** @description Тело запроса разобрано, но поля не прошли проверку: `amount_minor`, `currency`, `order_id`, `description` или поле сверх схемы. Карта нарушений — в `details.errors`: ключ — имя поля, значение — описание нарушения; перечисляются все нарушения разом. */
             422: {
                 headers: {
                     [name: string]: unknown;

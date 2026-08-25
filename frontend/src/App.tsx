@@ -326,6 +326,11 @@ export default function App() {
         const path = `/v1/payments/${id}/cancel`
         const first = entryFromResult('cancel', path, await cancelPayment(id, m))
         const second = entryFromResult('cancel', path, await cancelPayment(id, m))
+        // F14: две записи различимы — первая отмена меняет состояние,
+        // повтор возвращает тот же результат (тексты обещаны макетом)
+        if (first.status === 200) first.note = 'Платёж отменён: pending → canceled.'
+        if (second.status === 200)
+          second.note = 'Повтор отмены — тот же результат: canceled. Отмена идемпотентна.'
         const entries = [second, first]
         prepend({
           kind: 'group',
