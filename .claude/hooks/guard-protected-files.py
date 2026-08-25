@@ -18,6 +18,11 @@
 
 Исключения из .claude/guard-allow.txt здесь намеренно не действуют: постоянное
 исключение для файла правил — это и есть снятие защиты.
+
+Третья, найденная 2026-08-25 (issue #24): корень для разрешения путей брался
+из `CLAUDE_PROJECT_DIR`/`os.getcwd()` — внутри linked worktree это могло
+оказаться самим worktree, а не основной копией. Теперь корень — общий для
+обеих через `git rev-parse --git-common-dir` (`_hooklib.repo_root`).
 """
 import os
 import re
@@ -95,7 +100,9 @@ def protected_hit(text, root):
 def main():
     data = H.read_input()
     tool = data.get("tool_name", "")
-    root = os.path.realpath(H.project_dir())
+    # issue #24: корень — общий для основной копии и её worktree, а не то,
+    # что случайно лежит в CLAUDE_PROJECT_DIR/cwd. См. _hooklib.repo_root.
+    root = H.repo_root(data.get("cwd"))
 
     if tool == "Bash":
         cmd = (data.get("tool_input") or {}).get("command") or ""
