@@ -85,7 +85,7 @@ def main():
                 break
 
     try:
-        path = os.path.join(H.project_dir(), ".claude", "logs", "untrusted.jsonl")
+        path = os.path.join(H.state_dir(), ".claude", "logs", "untrusted.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({

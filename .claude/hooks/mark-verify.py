@@ -108,7 +108,7 @@ def main():
         for sid in stale:
             del sessions[sid]
 
-    path = os.path.join(H.project_dir(), ".claude", "state", "verify.json")
+    path = os.path.join(H.state_dir(), ".claude", "state", "verify.json")
     H.update_json_state(path, mutate)
     sys.exit(0)
 

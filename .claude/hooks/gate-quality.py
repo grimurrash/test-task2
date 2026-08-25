@@ -83,11 +83,13 @@ def main():
         count = len([ln for ln in dirty.splitlines() if ln.strip()])
         problems.append("незакоммиченных изменений: %d (git status --porcelain непустой)" % count)
 
-    # verify.json пишется по H.project_dir() (mark-verify.py), не по `root`
+    # verify.json пишется по H.state_dir() (mark-verify.py), не по `root`
     # этого хука — читаем оттуда же, а не оттуда, где реально идёт работа.
+    # state_dir совпадает с корнем проекта везде, кроме прогона тестов, который
+    # уводит состояние на свою копию (issue #54).
     state = {}
     try:
-        with open(os.path.join(H.project_dir(), ".claude", "state", "verify.json"),
+        with open(os.path.join(H.state_dir(), ".claude", "state", "verify.json"),
                   encoding="utf-8") as fh:
             state = json.load(fh)
     except Exception:
@@ -112,7 +114,7 @@ def main():
         sys.exit(0)
 
     signature = hashlib.sha1("|".join(problems).encode()).hexdigest()
-    marker = os.path.join(root, ".claude", "state", "gate-last-block.json")
+    marker = os.path.join(H.state_dir(), ".claude", "state", "gate-last-block.json")
     try:
         with open(marker, encoding="utf-8") as fh:
             last = json.load(fh)

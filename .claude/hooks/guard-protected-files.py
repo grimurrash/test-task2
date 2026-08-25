@@ -123,6 +123,22 @@ def main():
                 guard="guard-protected-files",
             )
 
+        # Подмена корня состояния — то же самое, что выдача пропуска себе,
+        # только окольным путём: хуки станут читать unlock.json из каталога,
+        # который агент полностью контролирует (issue #54). Переменная
+        # существует ради изоляции прогона тестов, и выставлять её вправе
+        # тот, кто запускает набор, а не команда внутри сессии.
+        if re.search(r"\bCLAUDE_GUARD_STATE_DIR\b", normalized):
+            H.decide(
+                "deny",
+                "Заблокировано хуком guard-protected-files: подмена корня состояния "
+                "обвязки из сессии агента.\nКоманда: %s\n"
+                "CLAUDE_GUARD_STATE_DIR уводит пропуски и журналы на другой каталог. "
+                "Задать её из команды — значит подсунуть хукам собственный unlock.json; "
+                "это выдача пропуска себе, а не настройка." % cmd[:300],
+                guard="guard-protected-files",
+            )
+
         writes = bool(WRITE_INTENT.search(normalized))
         inline = bool(INLINE_CODE.search(normalized))
         if not writes and not inline:
