@@ -28,12 +28,20 @@ info:
     - **Тот же ключ с другим телом** → **409** `idempotency_key_reuse`.
       Существующий платёж не изменяется.
     - **Две одновременные отправки** с одним ключом порождают ровно один платёж.
-      Проигравший запрос получает либо тот же ресурс, либо **409**
-      `request_in_progress` — но никогда второй `id`.
+      Проигравший запрос получает **409** `request_in_progress` — никогда второй
+      `id`. После завершения первого запроса повтор с тем же телом возвращает
+      200 и тот же ресурс.
     - **Ключ действует ограниченное время**: TTL, по умолчанию **24 часа**.
       После истечения тот же ключ создаёт новый платёж.
     - **Ключ уникален в пределах мерчанта**: одинаковый ключ у разных
       `X-Merchant-Id` — два независимых платежа.
+
+    **«Тем же телом»** считается запрос, совпадающий **по разобранным полям**
+    (`amount_minor`, `currency`, `order_id`, `description`); порядок ключей
+    JSON, пробелы и прочее форматирование значения не имеют — идемпотентность
+    не зависит от сериализатора клиента. Сравнение повторов происходит
+    **после успешной валидации тела**: невалидный запрос в историю ключа не
+    попадает и отвечает ошибкой по телу (400/422), а не 409.
 
     ## Идентификация мерчанта
 
@@ -45,6 +53,21 @@ info:
     Все ресурсы скоупятся по мерчанту: платёж другого мерчанта неотличим от
     несуществующего — запрос к нему по верному `id` возвращает **404**
     `payment_not_found`. Существование чужого ресурса не раскрывается.
+
+    ## CORS
+
+    Песочница живёт на другом origin (`http://localhost:8081`) и зовёт API из
+    браузера, поэтому CORS — часть гарантии API, а не деталь развёртывания:
+
+    - `Access-Control-Allow-Origin: *` — открытый CORS, без credentials;
+    - `Access-Control-Allow-Headers: Content-Type, Idempotency-Key, X-Merchant-Id`;
+    - `Access-Control-Allow-Methods: GET, POST, OPTIONS`;
+    - preflight `OPTIONS` на любой путь отвечает **204** без тела;
+    - заголовки `Access-Control-*` присутствуют **на всех ответах, включая
+      ошибки 4xx** — иначе браузер покажет ошибку сети вместо ответа API.
+
+    `OPTIONS`-эндпоинты в `paths` не описываются: это транспортная гарантия,
+    а не ресурс API.
 
     ## Тестовые суммы
 
@@ -78,16 +101,26 @@ info:
     пояснение, `details` — необязательный объект с дополнительными данными.
 
     Разделение статусов — по RFC 9110: **400** — проблема формы запроса
-    (заголовки), **422** — запрос разобран, но поля тела не проходят проверку.
-    Вся валидация тела отвечает одним кодом `validation_failed`; в
-    `details.errors` — карта «поле → нарушение» со **всеми** нарушениями разом.
+    (заголовки и неразобранное тело), **422** — тело разобрано, но поля не
+    проходят проверку. Вся валидация полей отвечает одним кодом
+    `validation_failed`; в `details.errors` — карта «поле → нарушение» со
+    **всеми** нарушениями разом.
+
+    **Порядок проверок фиксирован**, ответ — первый непройденный слой:
+    `X-Merchant-Id` → `Idempotency-Key` → разбор тела (`malformed_request`) →
+    валидация полей (`validation_failed`).
+
+    Ответы `5xx` — сбой сервера — **за границей контракта**: формат их тела
+    не гарантируется, контракт описывает поведение `2xx` и `4xx`.
 
     | Код | HTTP | Когда |
     |---|---|---|
     | `merchant_id_required` | 400 | любой запрос без заголовка `X-Merchant-Id` |
     | `invalid_merchant_id` | 400 | `X-Merchant-Id` пустой, длиннее 64 символов или вне набора `[A-Za-z0-9._-]` |
     | `idempotency_key_required` | 400 | создание платежа без заголовка `Idempotency-Key` или с пустым значением |
-    | `validation_failed` | 422 | поля тела не прошли проверку: `amount_minor` (ноль, отрицательное, дробное, строка, за границей безопасного целого), `currency` (вне `RUB`/`USD`/`EUR`, регистр строгий), `order_id`, `description`; карта нарушений — в `details.errors` |
+    | `invalid_idempotency_key` | 400 | `Idempotency-Key` длиннее 255 символов |
+    | `malformed_request` | 400 | тело не разобрано как JSON-объект: битый или пустой JSON, не-объект (`[]`, `"x"`, `null`, `42`), `Content-Type` не `application/json` |
+    | `validation_failed` | 422 | поля тела не прошли проверку: `amount_minor` (ноль, отрицательное, дробное, строка, за границей безопасного целого), `currency` (вне `RUB`/`USD`/`EUR`, регистр строгий), `order_id`, `description`, неизвестное поле; карта нарушений — в `details.errors` |
     | `idempotency_key_reuse` | 409 | тот же `Idempotency-Key` с другим телом запроса |
     | `request_in_progress` | 409 | повтор, пока первый запрос с этим ключом ещё обрабатывается |
     | `payment_not_found` | 404 | платёж не существует или принадлежит другому мерчанту |
@@ -226,7 +259,10 @@ paths:
                     description: Подписка на тариф «Про», август
                     created_at: '2026-08-25T12:34:56.000Z'
         '400':
-          description: Отсутствует или невалиден обязательный заголовок.
+          description: >-
+            Отсутствует или невалиден обязательный заголовок, либо тело не
+            разобрано как JSON-объект. Порядок проверок: `X-Merchant-Id` →
+            `Idempotency-Key` → разбор тела; ответ — первый непройденный слой.
           content:
             application/json:
               schema:
@@ -238,6 +274,12 @@ paths:
                     error:
                       code: idempotency_key_required
                       message: Заголовок Idempotency-Key обязателен при создании платежа
+                invalid_idempotency_key:
+                  summary: Idempotency-Key длиннее 255 символов
+                  value:
+                    error:
+                      code: invalid_idempotency_key
+                      message: Idempotency-Key должен быть строкой от 1 до 255 символов
                 merchant_id_required:
                   summary: Нет заголовка X-Merchant-Id
                   value:
@@ -252,6 +294,14 @@ paths:
                       message: >-
                         X-Merchant-Id должен быть непустой строкой до 64 символов
                         из набора A–Z a–z 0–9 . _ -
+                malformed_request:
+                  summary: Тело не разобрано как JSON-объект
+                  value:
+                    error:
+                      code: malformed_request
+                      message: >-
+                        Тело запроса должно быть JSON-объектом с
+                        Content-Type application/json
         '409':
           description: >-
             Конфликт ключа идемпотентности: тот же ключ с другим телом, либо
@@ -280,9 +330,9 @@ paths:
         '422':
           description: >-
             Тело запроса разобрано, но поля не прошли проверку: `amount_minor`,
-            `currency`, `order_id` или `description`. Карта нарушений — в
-            `details.errors`: ключ — имя поля, значение — описание нарушения;
-            перечисляются все нарушения разом.
+            `currency`, `order_id`, `description` или поле сверх схемы. Карта
+            нарушений — в `details.errors`: ключ — имя поля, значение —
+            описание нарушения; перечисляются все нарушения разом.
           content:
             application/json:
               schema:
@@ -308,6 +358,15 @@ paths:
                           currency: 'вне списка RUB, USD, EUR (регистр строгий)'
                           order_id: не должен быть пустым
                           description: длина превышает 512 символов
+                validation_failed_unknown_field:
+                  summary: Поле сверх схемы
+                  value:
+                    error:
+                      code: validation_failed
+                      message: Тело запроса не прошло валидацию
+                      details:
+                        errors:
+                          callback_url: неизвестное поле
     get:
       operationId: listPayments
       tags: [Payments]
@@ -473,7 +532,8 @@ components:
         Ключ идемпотентности создания платежа; обязателен. Непустая строка
         от 1 до 255 символов, формат не навязывается — песочница генерирует
         UUID. Пустое значение приравнивается к отсутствию заголовка → 400
-        `idempotency_key_required`. Ключ действует ограниченное время —
+        `idempotency_key_required`; длиннее 255 символов → 400
+        `invalid_idempotency_key`. Ключ действует ограниченное время —
         **TTL, по умолчанию 24 часа**: в этом окне повтор с тем же телом
         возвращает 200 и тот же ресурс, повтор с другим телом — 409
         `idempotency_key_reuse`; после истечения TTL тот же ключ создаёт
@@ -620,7 +680,12 @@ components:
 
     PaymentCreateRequest:
       type: object
-      description: Тело запроса на создание платежа.
+      description: >-
+        Тело запроса на создание платежа. Поля сверх схемы запрещены
+        (`additionalProperties: false`): неизвестное поле → 422
+        `validation_failed`. «Тем же телом» при повторе считается совпадение
+        по разобранным полям, не по байтам.
+      additionalProperties: false
       required:
         - amount_minor
         - currency
@@ -682,6 +747,8 @@ components:
         - merchant_id_required
         - invalid_merchant_id
         - idempotency_key_required
+        - invalid_idempotency_key
+        - malformed_request
         - validation_failed
         - idempotency_key_reuse
         - request_in_progress
