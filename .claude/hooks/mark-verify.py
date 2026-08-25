@@ -108,7 +108,10 @@ def main():
         for sid in stale:
             del sessions[sid]
 
-    path = os.path.join(H.project_dir(), ".claude", "state", "verify.json")
+    # issue #54: пишем туда, куда указано, а не туда, что проверяем. В обычной
+    # сессии это одно и то же; набор тестов уводит запись к себе, чтобы отметка
+    # о выдуманном прогоне не попадала в боевой verify.json и не стирала чужую.
+    path = H.state_path("verify.json")
     H.update_json_state(path, mutate)
     sys.exit(0)
 

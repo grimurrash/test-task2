@@ -83,12 +83,11 @@ def main():
         count = len([ln for ln in dirty.splitlines() if ln.strip()])
         problems.append("незакоммиченных изменений: %d (git status --porcelain непустой)" % count)
 
-    # verify.json пишется по H.project_dir() (mark-verify.py), не по `root`
+    # verify.json пишется по H.state_path() (mark-verify.py), не по `root`
     # этого хука — читаем оттуда же, а не оттуда, где реально идёт работа.
     state = {}
     try:
-        with open(os.path.join(H.project_dir(), ".claude", "state", "verify.json"),
-                  encoding="utf-8") as fh:
+        with open(H.state_path("verify.json"), encoding="utf-8") as fh:
             state = json.load(fh)
     except Exception:
         pass
@@ -112,7 +111,10 @@ def main():
         sys.exit(0)
 
     signature = hashlib.sha1("|".join(problems).encode()).hexdigest()
-    marker = os.path.join(root, ".claude", "state", "gate-last-block.json")
+    # Дедуп-маркер по умолчанию остаётся у корня границы, как и был; уводится
+    # только если состояние перенаправлено явно (issue #54) — иначе прогон
+    # набора гасил бы соседям их дедуп своими фикстурными блокировками.
+    marker = H.state_path("gate-last-block.json", root)
     try:
         with open(marker, encoding="utf-8") as fh:
             last = json.load(fh)
