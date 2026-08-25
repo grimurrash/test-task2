@@ -76,6 +76,11 @@ curl -i -X POST "$API/v1/payments" \
   -d '{"amount_minor":999,"currency":"USD","order_id":"order-2026-0825-0009"}'
 ```
 
+«Тем же телом» считается совпадение **по разобранным полям** — порядок ключей
+в JSON и форматирование значения не имеют. А запрос с невалидным телом в
+историю ключа вообще не попадает: он получит ошибку по телу (400 или 422),
+а не 409, и ключ останется свободным для нормальной попытки.
+
 ## 4. Статус платежа → 200
 
 ```bash
@@ -129,7 +134,13 @@ curl -i "$API/v1/payments" \
 ## Отказы, которые стоит увидеть заранее
 
 Проблема формы запроса — **400**, проблема полей тела — **422**. Это разные
-слои, и коды у них разные.
+слои, и коды у них разные. Порядок проверок фиксирован, ответ приходит от
+первого непройденного слоя:
+
+`X-Merchant-Id` → `Idempotency-Key` → разбор тела → валидация полей.
+
+Поэтому запрос, у которого сломано сразу всё, ответит про заголовок, а не про
+поля: чинить их придётся по очереди, а не разом.
 
 Без `X-Merchant-Id` → **400** `merchant_id_required`:
 
@@ -145,6 +156,28 @@ curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
   -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0004"}'
+```
+
+Ключ длиннее 255 символов → **400** `invalid_idempotency_key`:
+
+```bash
+curl -i -X POST "$API/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "X-Merchant-Id: $MERCHANT" \
+  -H "Idempotency-Key: $(printf 'k%.0s' $(seq 256))" \
+  -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0005"}'
+```
+
+Тело не разобрано как JSON-объект → **400** `malformed_request`. Сюда же
+попадают пустое тело, массив вместо объекта и запрос без
+`Content-Type: application/json`:
+
+```bash
+curl -i -X POST "$API/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "X-Merchant-Id: $MERCHANT" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"amount_minor":'
 ```
 
 Поля тела не прошли проверку → **422** `validation_failed`, и в
