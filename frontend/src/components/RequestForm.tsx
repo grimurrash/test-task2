@@ -16,6 +16,7 @@ export function RequestForm(props: {
   fieldErrors: FieldErrors
   inFlight: boolean
   canRepeat: boolean
+  lastSummary: string | null
   onSubmit: () => void
   onRepeat: () => void
   onGenerateKey: () => void
@@ -130,7 +131,15 @@ export function RequestForm(props: {
         >
           Отправить ещё раз тот же запрос
         </button>
-        <p className="sub">Повторяет предыдущий запрос дословно — тело и ключ без изменений (U2).</p>
+        {/* #81: подпись называет поведение буквально, а строка под ней
+            показывает хранимый запрос — тот самый, что уйдёт по кнопке.
+            Форма может быть уже другой, и это видно, а не скрыто. */}
+        <p className="sub">
+          Повторяет последний запрос создания дословно — тело и ключ без изменений (U2).
+        </p>
+        {props.lastSummary && (
+          <p className="sub repeat-summary mono">Сейчас это: {props.lastSummary}</p>
+        )}
       </div>
     </form>
   )
