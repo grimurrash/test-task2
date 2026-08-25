@@ -3,6 +3,13 @@
 
 Гейт качества должен опираться на факт, а не на слова агента о том, что
 «всё проверено». Здесь фиксируется, что именно и когда запускалось.
+
+issue #33: несколько ролевых сессий пишут один и тот же verify.json — не
+у каждой своя копия (CLAUDE_PROJECT_DIR не различает .worktrees/<роль>,
+issue #24). Раньше плоские ключи tests/static/scan затирались чужим
+прогоном: сессия A видела «тесты красные», хотя красным был прогон сессии B.
+Теперь запись — под ключом session_id внутри verify.json, а не поверх
+общих ключей; читает её тем же ключом gate-quality.py.
 """
 import json
 import os
@@ -25,6 +32,11 @@ KINDS = [
     (r"\bmake\s+(?:lint|analyse|analyze)\b|\bscripts/ci/(?:lint|analyse)\.sh\b", "static"),
     (r"\bscripts/scan_untrusted\.py\b", "scan"),
 ]
+
+# Записи сессий старше недели чистятся при каждой новой записи — иначе
+# verify.json растёт записями сессий, которых давно нет, без каких-либо
+# ограничений.
+SESSION_TTL = 7 * 24 * 3600
 
 def main():
     data = H.read_input()
@@ -67,23 +79,37 @@ def main():
     if re.search(FAILURE_MARKERS, tail[-4000:]):
         failed = True
 
-    path = os.path.join(H.project_dir(), ".claude", "state", "verify.json")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    state = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
-    except Exception:
-        state = {}
-    for kind in kinds:
-        state[kind] = {
-            "ts": time.time(),
+    session_id = data.get("session_id") or "unknown"
+    now = time.time()
+    record = {
+        kind: {
+            "ts": now,
             "human_ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "command": cmd[:300],
             "failed": failed,
         }
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, ensure_ascii=False, indent=1)
+        for kind in kinds
+    }
+
+    def mutate(state):
+        # Плоский формат до issue #33 (ключи tests/static/scan прямо на
+        # верхнем уровне) выбрасывается при первой же записи в новом
+        # формате — это чужие, уже не относящиеся ни к одной сессии данные,
+        # держать их дальше значило бы читать их же по ошибке снова.
+        state.pop("tests", None)
+        state.pop("static", None)
+        state.pop("scan", None)
+        sessions = state.setdefault("sessions", {})
+        sessions.setdefault(session_id, {}).update(record)
+        stale = [
+            sid for sid, rec in sessions.items()
+            if max((v.get("ts", 0) for v in rec.values()), default=0) < now - SESSION_TTL
+        ]
+        for sid in stale:
+            del sessions[sid]
+
+    path = os.path.join(H.project_dir(), ".claude", "state", "verify.json")
+    H.update_json_state(path, mutate)
     sys.exit(0)
 
 main()

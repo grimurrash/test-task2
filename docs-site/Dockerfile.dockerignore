@@ -1,0 +1,14 @@
+# Контекст сборки — корень репозитория, поэтому список исключений лежит рядом
+# с Dockerfile: BuildKit читает <dockerfile>.dockerignore раньше корневого
+# .dockerignore, и общий файл в корне ради одного образа заводить не нужно.
+#
+# Образу нужны ровно два входа: docs-site/ (без установленных пакетов и
+# прошлой сборки) и openapi/openapi.yaml. Остальное в демон не отправляем.
+
+*
+!docs-site
+!openapi/openapi.yaml
+!design/tokens.css
+
+docs-site/node_modules
+docs-site/dist

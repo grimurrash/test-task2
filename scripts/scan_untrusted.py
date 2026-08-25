@@ -11,6 +11,8 @@
 CLI:  python3 scripts/scan_untrusted.py [путь ...]
       код возврата 1, если что-то найдено.
 """
+# scan-untrusted: allow-samples — файл держит корпус шаблонов инъекций
+# по долгу службы: без них сканеру нечем искать.
 import os
 import re
 import sys
@@ -56,15 +58,43 @@ PHRASES = [
 
 COMPILED = [(re.compile(p, re.I), h) for p, h in PHRASES]
 
-# Файлы, которые содержат образцы инъекций по долгу службы: сканер и его тесты.
+# Файл, который держит образцы инъекций по долгу службы, объявляет об этом сам —
+# строкой с маркером в своей шапке (issue #42). Раньше здесь был список имён
+# (`SELF_FILES`), и он отставал от репозитория: как только собственные тесты
+# появились у роли бэкенда, сканер начал валить их CI. Перечисление не
+# закрывается — ровно как список защищённых упоминаний в guard-protected-files.
+#
+# Маркер — обычная подстрока, поэтому работает в комментарии любого языка:
+#   Python/shell/YAML:  # scan-untrusted: allow-samples
+#   TS/JS/Go:           // scan-untrusted: allow-samples
+#   Markdown/HTML:      <!-- scan-untrusted: allow-samples -->
+#
+# Ищется только в начале файла: маркер, оказавшийся в глубине внешнего текста —
+# случайно или намеренно, — отключал бы проверку файла, а сканер существует
+# ровно ради внешнего текста. Заодно это выполняет требование «виден человеку
+# при чтении файла, а не спрятан».
+#
 # Пропуск объявляется вслух в выводе — тихая фильтрация превращает отчёт в ложь.
-SELF_FILES = {"scan_untrusted.py", "test_hooks.py"}
+# Клапан `.claude/guard-allow.txt` здесь намеренно не действует: это другой
+# механизм (ослабление запретов хуков), и смешивать их не надо.
+SAMPLE_MARKER = "scan-untrusted: allow-samples"
+MARKER_WINDOW = 2048
 
-# .worktrees — рабочие копии ролей. Внутри каждой лежит полная копия репозитория,
-# включая файлы с намеренными образцами инъекций; без пропуска сканер находил бы
-# их снова и снова и возвращал ненулевой код на здоровом дереве.
-SKIP_DIRS = {".git", ".worktrees", "node_modules", "vendor", ".venv", "venv",
-             "dist", "build", "__pycache__", ".claude/logs"}
+# Каталоги, в которые не ходим. Сравнение — по имени каталога.
+#
+# Рабочие копии ролей лежат в двух местах: наша `.worktrees/` и `.claude/worktrees/`,
+# которую заводит платформа. Внутри каждой — полный дубль репозитория; без пропуска
+# сканер проверял бы одно и то же по многу раз. Размен назван вслух в docs/HOOKS.md:
+# копия пропускается потому, что оригинал сканируется, — но файл, которого
+# в оригинале нет, проверку не пройдёт.
+SKIP_DIRS = {".git", ".worktrees", "worktrees", "node_modules", "vendor",
+             ".venv", "venv", "dist", "build", "__pycache__"}
+
+# Пути от корня сканирования — для случаев, когда имя каталога само по себе
+# слишком общее, чтобы пропускать его везде. `.claude/logs` раньше стоял
+# в SKIP_DIRS и не работал никогда: там сравнивается имя каталога (`logs`),
+# а не путь. Тот же класс ошибки, что и пропуск файлов по basename (issue #42).
+SKIP_REL_PATHS = {os.path.join(".claude", "logs")}
 TEXT_EXT = {".md", ".txt", ".json", ".yml", ".yaml", ".html", ".htm", ".csv", ".xml",
             ".js", ".ts", ".py", ".php", ".go", ".sh", ".toml", ".ini", ".cfg", ".sql"}
 
@@ -87,16 +117,22 @@ def find_markers(text, limit=40):
                 return found
     return found
 
+def declares_samples(text):
+    """Файл объявил себя носителем образцов инъекций — маркер в шапке."""
+    return SAMPLE_MARKER in text[:MARKER_WINDOW]
+
 def scan_path(root, skipped=None):
     hits = []
     skipped = skipped if skipped is not None else []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in SKIP_DIRS
+            and os.path.normpath(os.path.join(rel_dir, d)) not in SKIP_REL_PATHS
+        ]
         for name in filenames:
             path = os.path.join(dirpath, name)
-            if name in SELF_FILES:
-                skipped.append(path)
-                continue
             if os.path.splitext(name)[1].lower() not in TEXT_EXT:
                 continue
             if os.path.getsize(path) > 2_000_000:
@@ -105,6 +141,9 @@ def scan_path(root, skipped=None):
                 with open(path, encoding="utf-8", errors="replace") as fh:
                     text = fh.read()
             except OSError:
+                continue
+            if declares_samples(text):
+                skipped.append(path)
                 continue
             for kind, human, snippet in find_markers(text):
                 hits.append((path, kind, human, snippet))
@@ -118,9 +157,16 @@ def main(argv):
         if os.path.isdir(root):
             all_hits.extend(scan_path(root, skipped))
         elif os.path.isfile(root):
+            # Тот же маркер действует и когда файл назван прямо: иначе механизм
+            # вёл бы себя по-разному в зависимости от того, как его позвали —
+            # каталогом или файлом. Прежний SELF_FILES здесь не проверялся вовсе.
             with open(root, encoding="utf-8", errors="replace") as fh:
-                for kind, human, snippet in find_markers(fh.read()):
-                    all_hits.append((root, kind, human, snippet))
+                text = fh.read()
+            if declares_samples(text):
+                skipped.append(root)
+                continue
+            for kind, human, snippet in find_markers(text):
+                all_hits.append((root, kind, human, snippet))
     if skipped:
         print("scan_untrusted: пропущены файлы с образцами инъекций: %s"
               % ", ".join(sorted(skipped)))
