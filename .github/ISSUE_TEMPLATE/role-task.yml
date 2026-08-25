@@ -91,6 +91,8 @@ body:
     attributes:
       label: Правила, общие для всех ролей
       options:
+        - label: Приёмка задания записана комментарием до первого коммита — пять пунктов, включая вердикт
+          required: true
         - label: Работа идёт в своей ветке, в `main` — только через pull request
           required: true
         - label: PR закрывает эту задачу строкой `Closes #<номер>`
