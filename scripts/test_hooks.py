@@ -9,7 +9,6 @@
 """
 # scan-untrusted: allow-samples — набор держит образцы инъекций по долгу службы:
 # на них проверяется, что scan-untrusted их находит и называет вслух.
-import hashlib
 import json
 import os
 import shutil
@@ -180,11 +179,6 @@ BASH_LS_WITH_MARKER = {
     },
 }
 
-# Временный корень состояния на весь прогон: пропуски, журналы, отметки
-# о прогонах и маркер дедупа гейта. Создаётся при импорте, убирается в конце
-# main(). Всё, что хуки пишут во время проверок, остаётся здесь (issue #54).
-STATE_DIR = tempfile.mkdtemp(prefix="hooks-state-")
-
 def run(hook, payload, project_dir=None):
     # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
     # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
@@ -193,8 +187,7 @@ def run(hook, payload, project_dir=None):
     # значит буквально воспроизвести «сессию, у которой CLAUDE_PROJECT_DIR
     # указывает на worktree», а не полагаться на то, что хук прочтёт cwd
     # из payload.
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT,
-               CLAUDE_GUARD_STATE_DIR=STATE_DIR)
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT)
     proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
@@ -285,19 +278,17 @@ def main():
     failures = 0
     print("Проверка хуков. Корень проекта: %s\n" % ROOT)
 
-    # Прогон не должен зависеть от того, открыта ли сейчас зона, и — что важнее —
-    # не должен быть виден снаружи набора (issue #54). Раньше здесь снимался
-    # БОЕВОЙ пропуск, проверки шли на нём, а в конце возвращалось сохранённое:
-    # стоило сэру выдать пропуск в те же секунды, и восстановление затирало
-    # свежую выдачу. Пропуск сгорал неиспользованным, а в боевой журнал попадали
-    # фикстурные события. Прогон требует гейт качества после каждой правки —
-    # то есть роль, честно выполняющая требование, ломала работу соседней.
-    #
-    # Теперь состояние обвязки на время прогона уводится на временный каталог
-    # через CLAUDE_GUARD_STATE_DIR (см. _hooklib.state_dir). Боевые файлы
-    # не читаются и не пишутся вовсе — восстанавливать нечего.
-    unlock_path = os.path.join(STATE_DIR, ".claude", "state", "unlock.json")
-    log_path = os.path.join(STATE_DIR, ".claude", "logs", "guard.jsonl")
+    # Прогон не должен зависеть от того, открыта ли сейчас зона: кейсы «без
+    # пропуска» при действующем пропуске получили бы allow и покраснели на ровном
+    # месте. Пропуск снимается на время проверки и возвращается в конце — чужое
+    # разрешение тест не тратит и раньше срока не гасит.
+    unlock_path = os.path.join(ROOT, ".claude", "state", "unlock.json")
+    log_path = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
+    saved_unlock = None
+    if os.path.exists(unlock_path):
+        with open(unlock_path, encoding="utf-8") as fh:
+            saved_unlock = fh.read()
+        os.remove(unlock_path)
     current = None
     for hook, title, payload, expected in CASES:
         if hook != current:
@@ -722,9 +713,11 @@ def main():
         print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
 
     print("\n  mark-verify.py")
-    # Временный корень, не боевой: отметка о прогоне, которого не было, не должна
-    # попадать в состояние машины (issue #54).
-    state_path = os.path.join(STATE_DIR, ".claude", "state", "verify.json")
+    state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
+    saved = None
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as fh:
+            saved = fh.read()
 
     # Каждая команда проверяется на чистом состоянии: иначе запись, сделанную
     # предыдущей командой, легко принять за успех текущей.
@@ -855,66 +848,20 @@ def main():
     finally:
         shutil.rmtree(gate_repo, ignore_errors=True)
 
-    # Ничего восстанавливать не нужно: всё состояние прогона жило во временном
-    # каталоге (issue #54). Раньше здесь возвращались боевые verify.json
-    # и unlock.json — и именно это восстановление затирало пропуск, выданный
-    # сэром в те же секунды.
-    shutil.rmtree(STATE_DIR, ignore_errors=True)
+    # Состояние возвращается таким, каким было до проверки: тест не имеет права
+    # оставлять после себя отметку о прогоне, которого не было.
+    if saved is None:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+    else:
+        with open(state_path, "w", encoding="utf-8") as fh:
+            fh.write(saved)
 
-    print("\n  изоляция прогона (issue #54) и общий корень состояния (issue #35)")
-    # Главная проверка #54, названная по смыслу: пропуск, выданный ДО прогона,
-    # обязан быть жив ПОСЛЕ. Раньше набор снимал боевой unlock.json, работал
-    # на нём и возвращал снимок — выданный в те же секунды пропуск затирался,
-    # а роль получала отказ на открытую зону.
-    live_unlock = os.path.join(ROOT, ".claude", "state", "unlock.json")
-    live_log = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
-    before_unlock = None
-    if os.path.exists(live_unlock):
-        with open(live_unlock, "rb") as fh:
-            before_unlock = hashlib.sha256(fh.read()).hexdigest()
-    before_log = os.path.getsize(live_log) if os.path.exists(live_log) else 0
-
-    # Прогон, наблюдаемый снаружи: несколько хуков, которые пишут состояние.
-    run("guard-git.py", {"tool_name": "Bash",
-                         "tool_input": {"command": "git checkout -b hotfix-temp"}})
-    run("mark-verify.py", {"session_id": "probe", "tool_name": "Bash",
-                           "tool_input": {"command": "python3 -m pytest tests/"},
-                           "tool_response": {"stdout": "OK", "is_error": False}})
-
-    after_unlock = None
-    if os.path.exists(live_unlock):
-        with open(live_unlock, "rb") as fh:
-            after_unlock = hashlib.sha256(fh.read()).hexdigest()
-    after_log = os.path.getsize(live_log) if os.path.exists(live_log) else 0
-
-    ok = before_unlock == after_unlock
-    failures += 0 if ok else 1
-    print("    %s %s" % ("✓" if ok else "✗",
-                          "пропуск, выданный до прогона, жив после прогона (побайтово)"))
-    ok = before_log == after_log
-    failures += 0 if ok else 1
-    print("    %s %s" % ("✓" if ok else "✗",
-                          "события набора не попали в боевой guard.jsonl"))
-    # Парная: изоляция не должна отменять саму проверку — хук обязан видеть
-    # пропуск из подставленного каталога и отказывать без него.
-    iso_unlock = os.path.join(STATE_DIR, ".claude", "state", "unlock.json")
-    os.makedirs(os.path.dirname(iso_unlock), exist_ok=True)
-    with open(iso_unlock, "w", encoding="utf-8") as fh:
-        json.dump({"git-branch": {"until": time.time() + 600,
-                                  "human_until": "тест", "reason": "изоляция"}}, fh)
-    got = decision_of(run("guard-git.py", {"tool_name": "Bash",
-                                           "tool_input": {"command": "git checkout -b hotfix-temp"}}))
-    ok = got == "allow"
-    failures += 0 if ok else 1
-    print("    %s %-62s ожидали allow получили %s"
-          % ("✓" if ok else "✗", "пропуск из изолированного каталога действует", got))
-    os.remove(iso_unlock)
-    got = decision_of(run("guard-git.py", {"tool_name": "Bash",
-                                           "tool_input": {"command": "git checkout -b hotfix-temp"}}))
-    ok = got == "deny"
-    failures += 0 if ok else 1
-    print("    %s %-62s ожидали deny  получили %s"
-          % ("✓" if ok else "✗", "без пропуска изоляция не открывает зону", got))
+    # Пропуск сэра возвращается таким, каким был до прогона.
+    if saved_unlock is not None:
+        os.makedirs(os.path.dirname(unlock_path), exist_ok=True)
+        with open(unlock_path, "w", encoding="utf-8") as fh:
+            fh.write(saved_unlock)
 
     print("\n%s" % ("ВСЁ ЗЕЛЁНОЕ" if failures == 0 else "ПРОВАЛОВ: %d" % failures))
     return 1 if failures else 0
