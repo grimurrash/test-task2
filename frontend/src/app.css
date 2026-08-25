@@ -156,6 +156,8 @@ select.control {
   font-size: var(--font-size-caption); color: var(--color-text-muted);
   margin-top: var(--space-2); text-align: center;
 }
+/* #81: что именно уйдёт по «Отправить ещё раз» — из хранимого тела, не из формы */
+.actions .repeat-summary { margin-top: var(--space-1); overflow-wrap: anywhere; }
 
 /* Сценарии (U4): название + чип ожидаемого кода */
 .scenarios { margin-top: var(--space-6); border-top: 1px solid var(--color-border); padding-top: var(--space-4); }
