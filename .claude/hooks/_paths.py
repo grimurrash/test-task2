@@ -235,17 +235,42 @@ FS_COMMANDS = {
     "xattr", "tar", "find", "zip", "unzip", "chflags", "mount", "umount",
 }
 
-def _operand(token):
-    """Сосед в арифметике: число или имя, без хвостовой пунктуации (`2}`)."""
-    return bool(OPERAND.match(re.sub(r"^\W+|\W+$", "", token or "")))
+def _operand(token, side):
+    """Сосед знака деления. side='left' — то, что может стоять слева от него.
 
-def _is_division(tokens, i, command_name):
-    """True, если токен из слэшей — знак деления, а не корень."""
-    if command_name in FS_COMMANDS:
+    Скобка учитывается асимметрично, и в этом весь смысл: закрывающая
+    ЗАВЕРШАЕТ выражение слева (`(a + b) / c`), открывающая НАЧИНАЕТ его справа
+    (`a / (b + c)`). Обратное сочетание арифметикой не является — у `rmtree(/)`
+    слева открывающая скобка, и это признак вызова с аргументом, а не деления.
+    Внешнее ревью показало обе стороны: составная арифметика получала ложный
+    отказ, потому что закрывающая скобка не считалась операндом.
+    """
+    raw = token or ""
+    if not raw:
         return False
+    if side == "left" and set(raw) <= set(")]}"):
+        return True
+    if side == "right" and set(raw) <= set("([{"):
+        return True
+    return bool(OPERAND.match(re.sub(r"^\W+|\W+$", "", raw)))
+
+def _is_division(tokens, i):
+    """True, если токен из слэшей — знак деления, а не корень.
+
+    Файловая команда ищется ПО ВСЕЙ СТАДИИ, а не по её имени. Проверять имя
+    было недостаточно, и это нашло внешнее ревью: у `sh -c 'chmod -R 777 / 2'`
+    имя стадии — `sh`, соседи `777` и `2` — операнды, и корень выпадал из
+    разбора. Тот же обход работал через `bash -c` и через `os.system` внутри
+    python. Собственная проверка противодействием этого не поймала: я проверял
+    имя, СДВИНУТОЕ соседней стадией, и не проверил файловую команду ВНУТРИ
+    встроенного кода — та же ошибка обобщения по одной форме, что и с ценой.
+    """
+    for tok in tokens:
+        if os.path.basename(tok or "").lower() in FS_COMMANDS:
+            return False
     prev = tokens[i - 1] if i else ""
     nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
-    return _operand(prev) and _operand(nxt)
+    return _operand(prev, "left") and _operand(nxt, "right")
 
 # Токен из одних звёздочек — glob-шаблон, а не путь. Ведущий слэш сюда
 # не входит, и это принципиально.
@@ -646,7 +671,7 @@ def path_candidates(command):
                 continue
             if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
                 continue
-            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i, name):
+            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i):
                 continue
             if "/" in token or token in (".", ".."):
                 found.append(token)
