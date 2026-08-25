@@ -59,6 +59,10 @@ def tokenize(text):
     """
     if not text:
         return []
+    # Продолжение строки обратным слэшем оболочка склеивает — значит склеиваем
+    # и мы, ДО разбора. Иначе первая половина заканчивается незавершённым
+    # экранированием, лексер падает, и команда остаётся без единого кандидата.
+    text = re.sub(r"\\\n", " ", text)
     out = []
     for idx, line in enumerate(text.split("\n")):
         if idx:
@@ -68,7 +72,11 @@ def tokenize(text):
         try:
             out.extend(lex)
         except ValueError:
-            return []                   # не разобрали — команда неизвестна
+            # Не разобрали — команда НЕИЗВЕСТНА, а не безопасна. Пустой список
+            # здесь означал бы «путей нет» и разрешал команду: ровно тот
+            # fail-open, который обещал не допускать соседний комментарий.
+            # Возвращаем грубое разбиение: лишние кандидаты дешевле пропуска.
+            out.extend(t for t in re.split(r"\s+", line) if t)
     return out
 
 def substitutions(text):
@@ -102,7 +110,12 @@ WRITE_INTENT = re.compile(
     # контейнера, идентификатор образа, выгрузка образа. Без них стадия
     # выглядела как «ничего не пишет», и путь хоста, уже собранный разбором,
     # до проверки не доходил. Второй круг внешнего ревью.
-    r"|--(?:cidfile|iidfile|output|iid)\b|\bdocker\s+(?:save|export)\b",
+    r"|--(?:cidfile|iidfile|output|iid)\b|\bdocker\s+(?:save|export)\b"
+    # Том, примонтированный БЕЗ `:ro`, даёт контейнеру запись в каталог хоста.
+    # Это способ писать наружу, и его надо считать намерением записи — иначе
+    # путь, уже правильно собранный разбором, до проверки не доходит.
+    # Четвёртый круг внешнего ревью.
+    r"|(?:-v|--volume|--mount)[=\s][^\s]*(?<!:ro)(?<!:ro,z)(?:\s|$)",
     re.I)
 
 # Встроенный код нельзя разобрать регуляркой: если он упоминает защищённый путь
@@ -456,10 +469,42 @@ HOST_PATH_OPTS = {
     "-o", "--output", "--cache-from", "--cache-to", "--iidfile",
     "--cidfile", "--label-file", "--authfile", "--security-opt",
     "--device", "--tlscacert", "--tlscert", "--tlskey", "--contextdir",
+    "--ssh", "--metadata-file", "--project-directory", "--rootfs",
+    "--env-file", "--certs-dir", "--storage-opt", "--runroot", "--root",
 }
+
+# Ключи, значение которых — составное: `type=bind,source=/host,target=/x`,
+# `id=x,src=/host/key`, `type=local,dest=/host/out`, `default=/host/key`.
+# Первая версия брала такой spec целиком, и абсолютный источник превращался
+# в относительный путь «внутри репозитория» — то есть проверка сходилась
+# не туда. Четвёртый круг внешнего ревью.
+COMPOSITE_KEYS = ("source=", "src=", "dest=", "default=", "path=")
 
 # Подкоманды, у которых позиционный аргумент — путь хоста.
 HOST_POSITIONAL_SUBS = {"build", "cp", "load", "save", "import", "export"}
+
+
+def host_paths_in_spec(spec):
+    """Пути хоста внутри значения ключа docker/podman.
+
+    Значение бывает составным (`type=bind,source=/host,target=/x`,
+    `id=x,src=/host/key`, `type=local,dest=/host/out`, `default=/host/key`)
+    и простым (`/host:/container`, `/host/path`). Первая версия брала составное
+    целиком, и абсолютный источник превращался в относительный путь «внутри
+    репозитория» — проверка сходилась не туда. Четвёртый круг внешнего ревью.
+    """
+    out = []
+    if "," in spec or any(k in spec for k in COMPOSITE_KEYS):
+        for part in spec.split(","):
+            for key in COMPOSITE_KEYS:
+                if part.startswith(key):
+                    out.append(part.split("=", 1)[1])
+                    break
+        if out:
+            return out
+    if "=" in spec and not spec.startswith(("/", ".", "~")):
+        return [spec.split("=", 1)[1].split(":", 1)[0]]
+    return [spec.split(":", 1)[0]]
 
 def container_scope_tokens(tokens):
     """(контейнерная ли стадия, пути хоста в ней). Разбор по токенам.
@@ -477,19 +522,11 @@ def container_scope_tokens(tokens):
     while i < len(tokens):
         tok = tokens[i]
         if tok in HOST_PATH_OPTS and i + 1 < len(tokens):
-            spec = tokens[i + 1]
-            if spec.startswith("type="):          # --mount type=bind,source=…
-                for part in spec.split(","):
-                    if part.startswith(("source=", "src=")):
-                        host.append(part.split("=", 1)[1])
-            elif "=" in spec and not spec.startswith(("/", ".", "~")):
-                host.append(spec.split("=", 1)[1])   # seccomp=/путь
-            else:
-                host.append(spec.split(":", 1)[0])   # /host:/container
+            host.extend(host_paths_in_spec(tokens[i + 1]))
             i += 2
             continue
         if "=" in tok and tok.split("=", 1)[0] in HOST_PATH_OPTS:
-            host.append(tok.split("=", 1)[1].split(":", 1)[0])
+            host.extend(host_paths_in_spec(tok.split("=", 1)[1]))
             i += 1
             continue
         if not sub and tok.lower() in HOST_POSITIONAL_SUBS:
