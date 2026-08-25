@@ -582,6 +582,71 @@ def main():
     finally:
         shutil.rmtree(scope_root, ignore_errors=True)
 
+    print("\n  guard-scope.py — путь в данных против пути в команде (issue #43)")
+    # Восемь известных ложных отказов одного класса: путеподобная строка
+    # УПОМЯНУТА, а не использована. Каждая пара ниже — сужение и его цена:
+    # слева «безобидное проходит», справа «настоящее по-прежнему отклоняется»
+    # в той же форме команды. Без правой половины сужение незаметно становится
+    # ослаблением — прямое требование задачи, и оно же главное.
+    scope_pairs = [
+        ("тело heredoc — данные, не команда",
+         "cat > docs/note.md <<'EOF'\nсмотри ../../outside/file\nEOF",
+         "запись наружу рядом с heredoc всё равно ловится",
+         "cat > docs/note.md <<'EOF'\nтекст\nEOF\necho x > ../../outside/file"),
+        ("URL — не файловый путь",
+         'R="https://raw.githubusercontent.com/org/repo/main/x.png" && echo "$R"',
+         "путь наружу остаётся путём наружу",
+         'echo x > /outside/file'),
+        ("присваивание переменной — не запись",
+         "API=http://localhost:8080; M='X-Merchant-Id: demo-shop'",
+         "присваивание не оправдывает запись наружу в той же строке",
+         "API=http://localhost:8080; echo x > /outside/file"),
+        ("путь внутри контейнера docker — чужая файловая система",
+         'docker run --rm --entrypoint sh img -c "ls -la /app && rm -rf /tmp/x"',
+         "источник тома docker — настоящий путь хоста, проверяется",
+         'docker run --rm -v /outside/secrets:/app img sh -c "ls /app"'),
+        ("glob-токен /** — не абсолютный путь",
+         'python3 -c "print(\'/**\')" > docs/out.txt',
+         "настоящий абсолютный путь наружу не проходит",
+         'python3 -c "print(1)" > /outside/out.txt'),
+        ("абсолютный путь ВНУТРЬ репозитория разрешён",
+         "cat >> %s/docs/journal.md <<'EOF'\nстрока\nEOF" % ROOT,
+         "абсолютный путь наружу — нет",
+         "cat >> /outside/journal.md <<'EOF'\nстрока\nEOF"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in scope_pairs:
+        got_ok = decision_of(run("guard-scope.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-scope.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
+    # Случай 8 из задачи — тот же класс, но в guard-protected-files: имя файла
+    # правил в ТЕКСТЕ задания, записываемом в другой файл. Сам хук не правится,
+    # чинится общий _paths.py, поэтому проверяется здесь же.
+    prot_pairs = [
+        ("имя правил в теле heredoc — упоминание, не правка",
+         "cat > docs/task.md <<'EOF'\nПравила требуют читать CLAUDE.md\nEOF",
+         "настоящая перезапись правил — по-прежнему отказ",
+         "cat > CLAUDE.md <<'EOF'\nпусто\nEOF"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in prot_pairs:
+        got_ok = decision_of(run("guard-protected-files.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-protected-files.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
     print("\n  mark-verify.py")
     state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
     saved = None
