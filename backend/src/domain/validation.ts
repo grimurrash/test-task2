@@ -20,6 +20,22 @@ import {
   validationFailed,
 } from './errors.js';
 
+/**
+ * Длина строки так, как её определяет контракт.
+ *
+ * `maxLength` в JSON Schema 2020-12 — это число символов по RFC 8259, то есть
+ * **кодовых точек**, а не кодовых единиц UTF-16. `str.length` в JavaScript
+ * считает единицы, и на символах вне основной плоскости (эмодзи, редкие иероглифы)
+ * даёт вдвое больше. Из-за этого `order_id` из 33 эмодзи получал 422, хотя
+ * контракт и любой сгенерированный из него клиент считают его валидным.
+ *
+ * Дефект #64. Проверено измерением: тот же `ajv`, которым сверяются ответы,
+ * признаёт такую строку валидной против `maxLength: 64`.
+ */
+function charLength(value: string): number {
+  return [...value].length;
+}
+
 const MERCHANT_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const IDEMPOTENCY_KEY_MAX = 255;
 const ORDER_ID_MAX = 64;
@@ -126,7 +142,7 @@ function checkOrderId(value: unknown, errors: Record<string, string>): void {
     errors['order_id'] = 'не должен быть пустым';
     return;
   }
-  if (value.length > ORDER_ID_MAX) {
+  if (charLength(value) > ORDER_ID_MAX) {
     errors['order_id'] = `длина превышает ${ORDER_ID_MAX} символов`;
   }
 }
@@ -142,7 +158,7 @@ function checkDescription(value: unknown, errors: Record<string, string>): void 
     errors['description'] = 'ожидается строка либо отсутствие поля';
     return;
   }
-  if (value.length > DESCRIPTION_MAX) {
+  if (charLength(value) > DESCRIPTION_MAX) {
     errors['description'] = `длина превышает ${DESCRIPTION_MAX} символов`;
   }
 }

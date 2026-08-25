@@ -122,6 +122,28 @@ export function responseSchemaPointer(route: string, method: string, status: num
   return pointerOf(schema['$ref']);
 }
 
+/**
+ * Схема запроса — место, куда автоматическая сверка не доставала.
+ *
+ * A7 проверяет **ответы** против схем контракта, а валидация **запроса**
+ * написана руками и с контрактом не сверялась ничем. Один дефект оттуда уже
+ * вылез (#64: `maxLength` в JSON Schema — кодовые точки, а не единицы UTF-16),
+ * и вылез не проверкой, а разговором. Здесь дыра закрывается: каждое тело,
+ * отправленное тестами, прогоняется через схему контракта, и вердикт схемы
+ * обязан совпасть с вердиктом сервера.
+ */
+export function requestBodyValid(body: unknown): boolean {
+  return validatorFor('/components/schemas/PaymentCreateRequest')(body);
+}
+
+export function requestBodyErrors(body: unknown): string {
+  const validate = validatorFor('/components/schemas/PaymentCreateRequest');
+  validate(body);
+  return (validate.errors ?? [])
+    .map((e) => `${e.instancePath || '/'} — ${e.message ?? 'нарушение'}`)
+    .join('; ');
+}
+
 export function assertValidAgainst(pointer: string, data: unknown, what: string): void {
   const validate = validatorFor(pointer);
   if (validate(data)) return;
