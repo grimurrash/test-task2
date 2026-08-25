@@ -55,6 +55,22 @@ MENTION = [
 # версия ловила имя в любом месте команды и блокировала даже коммит, в тексте
 # которого это имя встречалось. Механизм, дающий ложные тревоги, обходят так же
 # охотно, как дырявый.
+# Признаки записи внутри встроенного кода. Граница репозитория считает любой
+# `python3 -c` намерением записи — там цена ошибки высока, наружу пишут один раз.
+# Здесь та же строгость даёт перегиб: команда, читающая .claude/state/unlock.json,
+# получала отказ наравне с командой, его переписывающей. Читать свои же файлы
+# правил можно, менять — нет.
+INLINE_WRITE = re.compile(
+    r"open\s*\([^)]*['\"][wax]\+?['\"]"          # open(path, 'w'), 'a', 'x'
+    r"|open\s*\([^)]*['\"]r\+['\"]"              # open(path, 'r+') — тоже запись
+    r"|\bmode\s*=\s*['\"][wax]"
+    r"|\.write(?:lines|_text|_bytes)?\s*\("
+    r"|\bwriteFileSync\b|\bappendFileSync\b|\bfs\.\w*[Ww]rite\w*\s*\("
+    r"|\b(?:json|yaml|pickle)\.dump\s*\("
+    r"|\b(?:unlink|remove|rmtree|rename|replace|truncate|mkdir|makedirs|chmod|symlink)\s*\("
+    r"|\bshutil\.\w+\s*\(",
+    re.I)
+
 RUN_UNLOCK = re.compile(
     r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b")
 
@@ -100,7 +116,12 @@ def main():
                 guard="guard-protected-files",
             )
 
-        if not (WRITE_INTENT.search(normalized) or INLINE_CODE.search(normalized)):
+        writes = bool(WRITE_INTENT.search(normalized))
+        inline = bool(INLINE_CODE.search(normalized))
+        if not writes and not inline:
+            H.ok()
+        # Встроенный код без единого признака записи — это чтение.
+        if not writes and inline and not INLINE_WRITE.search(normalized):
             H.ok()
 
         for candidate in path_candidates(cmd):
