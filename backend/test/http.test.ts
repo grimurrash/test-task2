@@ -50,6 +50,72 @@ describe('CORS · песочница живёт на другом origin', () =>
   });
 });
 
+/**
+ * Маршрутизация после #94: коды `not_found` и `method_not_allowed` внесены
+ * в перечень контракта, 405 описан правилом на всё API. Перебор идёт через
+ * `app.raw`, где встроена сверка конверта, — то есть каждый ответ здесь
+ * проверяется против `schemas/Error` ещё до утверждений теста.
+ */
+describe('#74 · маршрутизация описана контрактом', () => {
+  const foreignMethods: [string, string][] = [
+    ['DELETE', '/v1/payments'],
+    ['PUT', '/v1/payments'],
+    ['PATCH', '/v1/payments/pay_x'],
+    ['DELETE', '/v1/payments/pay_x'],
+    ['PUT', '/v1/payments/pay_x'],
+    ['GET', '/v1/payments/pay_x/cancel'],
+    ['DELETE', '/v1/payments/pay_x/cancel'],
+  ];
+
+  for (const [method, path] of foreignMethods) {
+    it(`${method} ${path} → 405 method_not_allowed с заголовком Allow`, async () => {
+      const app = await startApp();
+      const res = await app.raw(method, path, { headers: { 'X-Merchant-Id': MERCHANT } });
+
+      assert.equal(res.status, 405);
+      assert.equal((res.body as ErrorEnvelope).error.code, 'method_not_allowed');
+      assert.ok(res.headers.get('allow'), 'ответ 405 обязан называть разрешённые методы');
+    });
+  }
+
+  const unknownPaths = ['/v1/nope', '/v1', '/', '/v1/payments/pay_x/refund', '/v2/payments'];
+
+  for (const path of unknownPaths) {
+    it(`неизвестный путь ${path} → 404 not_found, а не про ресурс`, async () => {
+      const app = await startApp();
+      const res = await app.raw('GET', path, { headers: { 'X-Merchant-Id': MERCHANT } });
+
+      assert.equal(res.status, 404);
+      assert.equal(
+        (res.body as ErrorEnvelope).error.code,
+        'not_found',
+        'путь и ресурс — разные ошибки: payment_not_found здесь был бы неправдой',
+      );
+    });
+  }
+
+  it('маршрут разбирается раньше заголовков: чужой путь без мерчанта — про путь', async () => {
+    const app = await startApp();
+    const res = await app.raw('GET', '/v1/nope');
+
+    assert.equal(res.status, 404);
+    assert.equal((res.body as ErrorEnvelope).error.code, 'not_found');
+  });
+
+  it('OPTIONS под правило 405 не попадает — preflight отвечает 204', async () => {
+    const app = await startApp();
+
+    for (const path of ['/v1/payments', '/v1/payments/pay_x', '/v1/nope', '/']) {
+      const res = await app.raw('OPTIONS', path, {
+        headers: { Origin: 'http://localhost:8081', 'Access-Control-Request-Method': 'POST' },
+      });
+
+      assert.equal(res.status, 204, `preflight на ${path} обязан отвечать 204, а не 404 или 405`);
+      assert.equal(res.headers.get('access-control-allow-origin'), '*');
+    }
+  });
+});
+
 describe('За границами контракта конверт 5.4 сохраняется', () => {
   it('неизвестный маршрут → 404 в том же конверте', async () => {
     const app = await startApp();
