@@ -232,7 +232,11 @@ SLASHES_ONLY = re.compile(r"^/+$")
 # ложный отказ. Точка и скобки индекса здесь безопасны: слева от знака деления
 # они завершают выражение, а вызов с аргументом-корнем (`rmtree(/)`) слева
 # имеет ОТКРЫВАЮЩУЮ скобку и операндом не считается.
-OPERAND = re.compile(r"^(?:\d+(?:\.\d+)?|[A-Za-z_][\w.]*(?:\[[^\]]*\])?)$")
+# Число — то, что НАЧИНАЕТСЯ с цифры: `10`, `3.14`, `1e6`, `0x10`, `1j`, `10L`.
+# Перечислять формы литералов по языкам бессмысленно — их больше, чем список
+# выдержит, и пятый круг ревью показал это на экспоненциальной записи. Признак
+# структурный, как и всё остальное здесь: начало токена, а не его содержимое.
+OPERAND = re.compile(r"^(?:\d[\w.]*|[A-Za-z_][\w.]*(?:\[[^\]]*\])?)$")
 
 # Имя команды, собранное на ходу (`$cmd`, `${cmd}`), разобрать нельзя: чем
 # окажется стадия — неизвестно. Незнакомая конструкция трактуется в пользу
@@ -294,7 +298,7 @@ def _fs_word(token):
         return os.path.basename(value).lower() in FS_COMMANDS
     return False
 
-def _is_division(tokens, i, all_tokens=None):
+def _is_division(tokens, i):
     """True, если токен из слэшей — знак деления, а не корень.
 
     Файловая команда ищется ПО ВСЕЙ СТАДИИ, а не по её имени. Проверять имя
@@ -305,11 +309,12 @@ def _is_division(tokens, i, all_tokens=None):
     имя, СДВИНУТОЕ соседней стадией, и не проверил файловую команду ВНУТРИ
     встроенного кода — та же ошибка обобщения по одной форме, что и с ценой.
     """
-    # Присваивания ищутся по ВСЕЙ команде, а не по стадии: имя команды кладут
-    # в переменную в одной стадии, используют в другой.
-    for tok in (all_tokens or tokens):
-        if "=" in tok and _fs_word(tok):
-            return False
+    # Сканирования присваиваний по всей команде здесь было: оно закрывало
+    # `cmd=chmod; $cmd -R 777 / 2`. Убрано как лишнее и вредное. Лишнее —
+    # потому что ту стадию закрывает признак динамического имени ниже, связи
+    # с присваиванием не требуя. Вредное — потому что отказ распространялся
+    # на несвязанные стадии: `tool=chmod; python3 -c "print(10 / 2)"` получал
+    # ложный отказ, хотя переменная нигде не использовалась. Пятый круг ревью.
     prev = tokens[i - 1] if i else ""
     nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
     # Имя файловой команды, стоящее ВПЛОТНУЮ к знаку деления, — это операнд,
@@ -700,8 +705,7 @@ def path_candidates(command):
     # `;` внутри кавычек (`sh -c "echo /app; ls /tmp/x"`) стадию не разрывает —
     # до перехода на токены это давало ложные срабатывания на аргументах,
     # предназначенных контейнеру.
-    all_tokens = tokenize(normalized)
-    for stage_tokens in split_stages(all_tokens):
+    for stage_tokens in split_stages(tokenize(normalized)):
         if not stage_tokens:
             continue
         # Перенаправления реальны в любой стадии, включая docker: вывод пишется
@@ -729,7 +733,7 @@ def path_candidates(command):
                 continue
             if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
                 continue
-            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i, all_tokens):
+            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i):
                 continue
             if "/" in token or token in (".", ".."):
                 found.append(token)
