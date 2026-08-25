@@ -30,6 +30,15 @@ const scalarBundle = resolve(
   'node_modules/@scalar/api-reference/dist/browser/standalone.js',
 )
 
+// Адрес API, к которому обращаются примеры и справочник. Порт переезжает
+// переменной окружения (R2), поэтому вшивать его в текст нельзя: у песочницы
+// это уже сделано build-аргументом, страница документации отставала и после
+// смены порта говорила с чужим процессом на 8080 (задача #85).
+//
+// Значение по умолчанию — прежнее: у кого порты стандартные, ничего не меняется.
+const DEFAULT_API_BASE = 'http://localhost:8080'
+const apiBase = (process.env.API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '')
+
 // Операции контракта — метод, путь, operationId.
 function operationsOf(spec) {
   const methods = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
@@ -107,6 +116,11 @@ const referencePage = () =>
     <script>
       Scalar.createApiReference('#scalar', {
         url: './openapi.yaml',
+        // Адрес поднятого стенда. Контракт при этом не трогаем: его servers —
+        // часть документа, а не настройка стенда, и подменять его на лету
+        // значило бы показывать читателю не тот файл, что лежит в репозитории.
+        // Переопределение живёт в конфигурации рендера (задача #85).
+        servers: [{ url: '${apiBase}', description: 'Локальный API (docker compose)' }],
         // Интерфейс по-русски: контракт написан по-русски, смешение языков
         // в подписях полей читателю ничего не даёт.
         localization: { locale: 'ru' },
@@ -178,13 +192,22 @@ async function build() {
 
   await writeFile(resolve(outDir, 'index.html'), referencePage())
 
-  const scenarios = await readFile(resolve(here, 'src', 'scenarios.md'), 'utf8')
+  // Адрес в примерах подставляется на сборке. В исходнике сценариев стоит
+  // адрес по умолчанию — файл читается сам по себе, без плейсхолдеров, — а на
+  // стенде с другим портом он заменяется на фактический.
+  const scenarios = (await readFile(resolve(here, 'src', 'scenarios.md'), 'utf8')).replaceAll(
+    DEFAULT_API_BASE,
+    apiBase,
+  )
   await writeFile(
     resolve(outDir, 'scenarios.html'),
     scenariosPage(marked.parse(scenarios, { async: false })),
   )
 
   console.log(`Контракт: ${specPath}`)
+  console.log(
+    `Адрес API на странице: ${apiBase}${apiBase === DEFAULT_API_BASE ? ' (по умолчанию)' : ' (из API_BASE)'}`,
+  )
   console.log(
     `Операций: ${operations.length} — ${operations.map((o) => `${o.method} ${o.path}`).join(', ')}`,
   )
