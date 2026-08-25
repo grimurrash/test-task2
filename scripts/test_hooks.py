@@ -639,6 +639,58 @@ def main():
         failures += 0 if ok else 1
         print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
 
+    # Ревью PR #53 (Айрат): первая версия сужений открыла шесть дыр. Ниже —
+    # ровно они, парами. Общее у всех одно: сужение, законное для одной формы,
+    # молча распространилось на другую.
+    review_pairs = [
+        ("docker-стадия сужается, соседняя — нет",
+         'docker run --rm img sh -c "ls /app"',
+         "удаление наружу в стадии ПОСЛЕ docker проверяется",
+         "docker compose up -d && rm -rf /outside/dir"),
+        ("перенаправление docker на хост — реальный путь",
+         'docker ps > docs/ps.txt',
+         "перенаправление docker наружу отклоняется",
+         "docker ps > /outside/file"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in review_pairs:
+        got_ok = decision_of(run("guard-scope.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-scope.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
+    # Тело документа — данные только если получатель его ПИШЕТ. У интерпретатора
+    # тело исполняется, и вырезать его значило убрать из проверки настоящий код:
+    # так обходились и граница репозитория, и — что хуже — guard-secrets, ради
+    # которого весь механизм затевался. Разбор общий на четыре хука, поэтому
+    # проверяется на трёх из них.
+    interp_cases = [
+        ("guard-scope.py", "python-документ пишет наружу",
+         "python3 - <<'PY'\nopen('/outside/file','w').write('x')\nPY", "deny"),
+        ("guard-scope.py", "bash-документ удаляет наружу",
+         "bash <<'SH'\nrm -rf /outside/dir\nSH", "deny"),
+        ("guard-secrets.py", "чтение .env через python-документ",
+         "python3 - <<'PY'\nprint(open('.env').read())\nPY", "deny"),
+        ("guard-secrets.py", "чтение ключа SSH через bash-документ",
+         "bash <<'SH'\ncat ~/.ssh/id_rsa\nSH", "deny"),
+        ("guard-git.py", "push в main через bash-документ",
+         "bash <<'SH'\ngit push origin main\nSH", "deny"),
+        ("guard-scope.py", "документ, который ПИШЕТСЯ в файл, остаётся данными",
+         "cat > docs/note.md <<'EOF'\nсмотри /outside/file\nEOF", "allow"),
+        ("guard-scope.py", "имя файла со словом bash не делает документ кодом",
+         "cat > docs/bash-notes.md <<'EOF'\nтекст\nEOF", "allow"),
+    ]
+    for hook, title, cmd, expected in interp_cases:
+        got = decision_of(run(hook, {"tool_name": "Bash", "tool_input": {"command": cmd}}))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
+
     # Случай 8 из задачи — тот же класс, но в guard-protected-files: имя файла
     # правил в ТЕКСТЕ задания, записываемом в другой файл. Сам хук не правится,
     # чинится общий _paths.py, поэтому проверяется здесь же.

@@ -41,7 +41,14 @@ WRITE_INTENT = re.compile(
 # или путь наружу, считаем это записью. Ложный отказ дешевле пропущенной записи.
 INLINE_CODE = re.compile(
     r"\b(?:python[\d.]*|python3)\s+-c\b|\bnode\s+-e\b|\bperl\s+-[a-z]*e\b"
-    r"|\bruby\s+-e\b|\bphp\s+-r\b|\bosascript\b|\bawk\b[^|;&]*\bprint\s*>",
+    r"|\bruby\s+-e\b|\bphp\s+-r\b|\bosascript\b|\bawk\b[^|;&]*\bprint\s*>"
+    # Код, поданный интерпретатору документом (`python3 - <<'PY'`, `bash <<'SH'`),
+    # — тот же встроенный код, только другой формы. Без этой строки тело
+    # оставалось в команде (см. heredoc_body_is_data), но хук выходил раньше,
+    # чем до него добирался: ни перенаправления, ни знакомой команды записи
+    # в строке нет. Найдено на ревью PR #53 (issue #43).
+    r"|(?:^|[;&|]\s*)(?:sudo\s+)?(?:(?:ba|z|k|da|c)?sh|python[\d.]*|node|deno|bun"
+    r"|perl|ruby|php|osascript)\b[^\n]*<<",
     re.I)
 
 def normalize(text):
@@ -93,6 +100,24 @@ GLOB_ONLY = re.compile(r"^[/*]+$")
 # а не пропуск записи.
 HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
+# Тело heredoc — данные ТОЛЬКО если получатель его записывает (`cat > file`,
+# `gh pr create --body-file -`). Если получатель — интерпретатор, тело
+# ИСПОЛНЯЕТСЯ, и вырезать его значит убрать из проверки настоящий код.
+# Найдено на ревью PR #53 (issue #43): `python3 - <<'PY' … PY` писал наружу,
+# `bash <<'SH'` удалял наружу, а через `guard-secrets` тем же приёмом читался
+# `.env` — то есть обход, ради которого хук и заведён, менял форму и проходил.
+# Проверяется первый токен строки-открывашки и токены после конвейера: важна
+# позиция команды, а не упоминание слова (`cat > bash-notes.md <<'EOF'` пишет
+# файл, а не исполняет).
+INTERPRETER = re.compile(
+    r"(?:^|[;&|]\s*)(?:sudo\s+)?(?:env\s+\S+\s+)*"
+    r"(?:(?:ba|z|k|da|c)?sh|python[\d.]*|node|deno|bun|perl|ruby|php|osascript|awk|xargs)"
+    r"\b", re.I)
+
+def heredoc_body_is_data(opening_line):
+    """True, если тело документа получатель запишет, а не исполнит."""
+    return not INTERPRETER.search(opening_line)
+
 def strip_heredocs(command):
     """Команда без тел heredoc-документов: остаётся то, что она исполняет.
 
@@ -118,6 +143,8 @@ def strip_heredocs(command):
         i += 1
         if not m:
             continue
+        if not heredoc_body_is_data(line):
+            continue          # тело исполняется — оставляем его под проверку
         delim = m.group(2)
         end = i
         while end < len(lines) and lines[end].strip() != delim:
@@ -131,7 +158,15 @@ def strip_heredocs(command):
 # хоста отношения не имеют (issue #43, случай 4). Единственное исключение —
 # источник тома: в `-v /host/path:/container/path` левая половина реальна,
 # и её проверять обязательно, иначе сужение стало бы дырой.
-CONTAINER_CMD = re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?(?:docker|podman)\s+", re.I)
+# Проверяется НАЧАЛО стадии, а не вся команда. Первая версия искала docker
+# по всей строке и, найдя, сужала разбор целиком: `docker compose up -d &&
+# rm -rf <наружу>` проходил границу — удаление оказывалось «аргументом
+# контейнера». Найдено на ревью PR #53 (issue #43).
+CONTAINER_CMD = re.compile(r"^\s*(?:sudo\s+)?(?:docker|podman)\s+", re.I)
+
+# Границы стадий: каждая проверяется отдельно, чтобы сужение одной стадии
+# не распространялось на соседние.
+STAGE_SPLIT = re.compile(r"\|\||&&|[;&|\n]")
 VOLUME_FLAG = re.compile(r"(?:^|\s)(?:-v|--volume|--mount)(?:=|\s+)(?P<spec>[^\s]+)")
 
 def container_scope(command):
@@ -159,23 +194,30 @@ def path_candidates(command):
     glob-токены и — для docker/podman — пути внутри контейнера, кроме
     источников примонтированных томов.
     """
-    normalized = normalize(command)          # уже без тел heredoc
-    is_container, volume_sources = container_scope(normalized)
-    found = [normalize(src) for src in volume_sources]
-    if is_container:
-        # Аргументы docker-команды описывают чужую файловую систему; проверять
-        # в ней нечего. Перенаправления и тома уже учтены отдельно.
-        for match in REDIRECT.finditer(normalized):
+    normalized = normalize(command)          # уже без тел «пишущих» heredoc
+    found = []
+    # Разбор идёт постадийно: сужение, законное для одной стадии, не должно
+    # распространяться на соседнюю. `docker compose up && rm -rf <наружу>` —
+    # две разные команды, и вторая обязана проверяться полностью.
+    for stage in STAGE_SPLIT.split(normalized):
+        if not stage.strip():
+            continue
+        # Перенаправления реальны в любой стадии, включая docker: `docker ps >
+        # /outside/file` пишет на хост, а не в контейнер.
+        for match in REDIRECT.finditer(stage):
             found.append(match.group("path"))
-        return found
-    for match in REDIRECT.finditer(normalized):
-        found.append(match.group("path"))
-    for token in SPLIT.split(normalized):
-        token = token.strip("<>")
-        if not token or token.startswith("-"):
+        is_container, volume_sources = container_scope(stage)
+        if is_container:
+            # Остальные аргументы описывают файловую систему контейнера;
+            # проверять в ней нечего. Источники томов — реальные пути хоста.
+            found.extend(volume_sources)
             continue
-        if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
-            continue
-        if "/" in token or token in (".", ".."):
-            found.append(token)
+        for token in SPLIT.split(stage):
+            token = token.strip("<>")
+            if not token or token.startswith("-"):
+                continue
+            if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
+                continue
+            if "/" in token or token in (".", ".."):
+                found.append(token)
     return found
