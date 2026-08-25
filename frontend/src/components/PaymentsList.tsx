@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Payment } from '../api/client'
 import { formatAmount } from '../lib/money'
+import { CardBoundary } from './CardBoundary'
 
 // description — недоверенный текст (U6/A10): только текстовые узлы React,
 // никакого dangerouslySetInnerHTML. Длинный текст обрезан тремя строками,
@@ -55,7 +56,8 @@ export function PaymentsList(props: {
         <p className="empty">Платежей пока нет.</p>
       )}
       {props.payments.map((p) => (
-        <article className="payment" key={p.id}>
+        <CardBoundary key={p.id} label={`Платёж ${p.id}`}>
+          <article className="payment">
           <div className="payment-head">
             <span className="amount">{formatAmount(p.amount_minor, p.currency)}</span>
             <span className="minor mono">{p.amount_minor}</span>
@@ -68,10 +70,11 @@ export function PaymentsList(props: {
               <span className="chip">status_reason: {p.status_reason}</span>
             )}
           </div>
-          {p.description !== null && p.description !== '' && (
-            <Description text={p.description} />
-          )}
-        </article>
+            {p.description !== null && p.description !== '' && (
+              <Description text={p.description} />
+            )}
+          </article>
+        </CardBoundary>
       ))}
     </>
   )

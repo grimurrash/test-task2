@@ -100,6 +100,13 @@ body {
   text-align: center; color: var(--color-text-muted);
   padding: var(--space-6) var(--space-4);
 }
+/* #104: блок, чей рендер бросил, честно называет себя, не роняя страницу */
+.render-fallback {
+  border: 1px dashed var(--color-error-border); border-radius: var(--radius-small);
+  background: var(--color-error-bg); color: var(--color-error);
+  font-size: var(--font-size-caption); padding: var(--space-3);
+  margin-bottom: var(--space-2); overflow-wrap: anywhere;
+}
 
 /* --- Форма (U1) -------------------------------------------------------------- */
 .field { margin-bottom: var(--space-4); }
