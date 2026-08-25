@@ -162,7 +162,9 @@ select.control {
   padding: var(--space-3); margin-bottom: var(--space-3);
   background: var(--color-surface);
 }
-.entry::before {
+/* Точка на оси — только у записей верхнего уровня; записи внутри .group
+   делят одну точку группы, своей не получают (селектор прямого потомка). */
+.timeline > .entry::before {
   content: ""; position: absolute;
   left: calc(-1 * var(--space-5) - var(--timeline-dot-size) / 2 + 5px);
   top: var(--space-4);
@@ -239,7 +241,6 @@ select.control {
   color: var(--color-text-muted); margin-bottom: var(--space-3);
 }
 .group .entry:last-child { margin-bottom: 0; }
-.group .entry::before { display: none; } /* точки — у самостоятельных записей, группа делит одну */
 .group::before {
   content: ""; position: absolute;
   left: calc(-1 * var(--space-5) - var(--timeline-dot-size) / 2 + 5px);
