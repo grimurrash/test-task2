@@ -14,8 +14,59 @@ issue #43: обратная сторона той же строгости — в
 """
 import os
 import re
+import shlex
 
 HOME = os.path.expanduser("~")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Разбор команды: токенами, а не шаблонами.
+#
+# Два круга внешнего ревью показали границу регулярок. Каждый круг закрывал
+# известные формы и открывал новые, потому что шаблон вынужден РЕШАТЬ вопросы
+# синтаксиса оболочки, не разбирая его: маркер документа внутри кавычек или
+# в комментарии принимался за настоящий и вырезал следующую команду; деление
+# по `;` резало содержимое кавычек; подстановка, которую исполняет хост,
+# отбрасывалась вместе с аргументами контейнера.
+#
+# Здесь команда сначала разбирается на токены, и только потом принимаются
+# решения. Кавычки, комментарии и экранирование становятся фактами разбора,
+# а не догадкой шаблона.
+#
+# Граница честная: shlex — лексер, не парсер оболочки. Он не знает группировки,
+# подоболочек и приоритетов. Поэтому решения опираются только на то, что он
+# даёт надёжно: границы слов, кавычки, комментарии, операторы. Незнакомая
+# конструкция трактуется в пользу ОТКАЗА — остаётся под проверкой, а не
+# исчезает из неё.
+# ─────────────────────────────────────────────────────────────────────────────
+
+STAGE_OPS = {";", "&&", "||", "|", "&"}
+
+# Подстановки исполняет ХОСТ, где бы они ни стояли — в том числе среди
+# аргументов контейнера. Второй прогон ревью: команда контейнера с подстановкой,
+# создающей файл снаружи, проходила границу, потому что вся стадия считалась
+# контейнерной.
+SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)|>\(([^()]*)\)")
+
+def tokenize(text):
+    """Токены строки. Пустой список — признак того, что разобрать не удалось;
+    вызывающий обязан считать такую команду неизвестной, а не безопасной."""
+    if not text:
+        return []
+    lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        return list(lex)
+    except ValueError:
+        return []
+
+def substitutions(text):
+    """Тела подстановок команд — они исполняются хостом."""
+    out = []
+    for m in SUBSTITUTION.finditer(text or ""):
+        for group in m.groups():
+            if group and group.strip():
+                out.append(group.strip())
+    return out
 
 ENV_HOME = re.compile(r"\$\{HOME\}|\$HOME\b|\$\{?USERPROFILE\}?\b")
 QUOTES = str.maketrans("", "", "\"'")
@@ -34,7 +85,12 @@ WRITE_INTENT = re.compile(
     r"|\bsed\b[^|;&]*\s-i\b|\bperl\b[^|;&]*\s-[a-z]*i[a-z]*\b"
     r"|\bcurl\b[^|;&]*\s-(?:o|-output)\b|\bwget\b[^|;&]*\s-(?:O|-output-document)\b"
     r"|\bgit\s+(?:clone|init|worktree\s+add)\b"
-    r"|\bpatch\b|\bapply\b[^|;&]*\.patch\b",
+    r"|\bpatch\b|\bapply\b[^|;&]*\.patch\b"
+    # Ключи контейнерных команд, создающие файлы НА ХОСТЕ: идентификатор
+    # контейнера, идентификатор образа, выгрузка образа. Без них стадия
+    # выглядела как «ничего не пишет», и путь хоста, уже собранный разбором,
+    # до проверки не доходил. Второй круг внешнего ревью.
+    r"|--(?:cidfile|iidfile|output|iid)\b|\bdocker\s+(?:save|export)\b",
     re.I)
 
 # Встроенный код нельзя разобрать регуляркой: если он упоминает защищённый путь
@@ -51,9 +107,11 @@ INLINE_CODE = re.compile(
     # интерпретатора от начала стадии. Без их учёта тело документа оставалось
     # в команде, но хук выходил раньше, чем до него доходил: ни перенаправления,
     # ни знакомой команды записи в строке нет. Подтверждено запуском.
+    # Разделитель `--` между обёрткой и командой тоже отодвигает имя:
+    # `env -- python3 - <<PY` проходил мимо. Второй круг внешнего ревью.
     r"|(?:^|[;&|]\s*)(?:(?:sudo(?:\s+-\w+(?:\s+\S+)?)*|env(?:\s+-\w+)*(?:\s+\w+=\S+)*"
     r"|command|exec|nice|ionice|timeout(?:\s+-\w+)*\s+\S+|stdbuf(?:\s+-\S+)*|nohup"
-    r"|setsid|busybox|time|uv\s+run|npx|bunx|\w+=\S+)\s+)*"
+    r"|setsid|busybox|time|uv\s+run|npx|bunx|\w+=\S+|--)\s+)*"
     r"(?:\S*/)?(?:(?:ba|z|k|da|c|fi)?sh|python[\d.]*|node|deno|bun"
     r"|perl|ruby|php|osascript|lua|Rscript|tclsh|pwsh)\b[^\n]*<<",
     re.I)
@@ -138,20 +196,64 @@ HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 # Список обёрток и интерпретаторов принципиально неполон — поэтому он стоит
 # на стороне безопасного исхода: не узнали интерпретатор, тело остаётся под
 # проверкой (лишний отказ), а не исчезает из неё.
-WRAPPER = (r"(?:sudo(?:\s+-\w+(?:\s+\S+)?)*|env(?:\s+-\w+)*(?:\s+\w+=\S+)*|command|exec|nice"
-           r"|ionice|timeout(?:\s+-\w+)*\s+\S+|stdbuf(?:\s+-\S+)*|nohup|setsid|busybox"
-           r"|xargs(?:\s+-\S+)*|time|uv\s+run|npx|bunx|\w+=\S+)")
+# Обёртки, которые стоят ПЕРЕД именем программы и её не меняют. Разбираются
+# по токенам: имя обёртки, затем её собственные ключи, затем настоящая команда.
+WRAPPERS = {
+    "sudo", "env", "command", "exec", "nice", "ionice", "timeout", "stdbuf",
+    "nohup", "setsid", "busybox", "xargs", "time", "npx", "bunx", "uv",
+}
 
-INTERPRETER = re.compile(
-    r"(?:^|[;&|]\s*)(?:" + WRAPPER + r"\s+)*"
-    r"(?:\S*/)?"
-    r"(?:(?:ba|z|k|da|c|fi)?sh|python[\d.]*|node|deno|bun|perl|ruby|php|osascript|awk|xargs"
-    r"|lua|Rscript|tclsh|groovy|pwsh|powershell|julia|ts-node|tsx)"
-    r"\b", re.I)
+# Потребители, ИСПОЛНЯЮЩИЕ тело документа. Список неполон принципиально,
+# поэтому решение построено от обратного: тело считается данными только когда
+# получатель уверенно опознан как пишущий. Незнакомое имя оставляет тело
+# под проверкой — лишний отказ дешевле пропущенного кода.
+INTERPRETERS = {
+    "sh", "bash", "zsh", "ksh", "dash", "csh", "fish", "ash",
+    "node", "deno", "bun", "perl", "ruby", "php", "osascript", "awk",
+    "lua", "rscript", "tclsh", "groovy", "pwsh", "powershell", "julia",
+    "ts-node", "tsx", "make", "sqlite3", "psql", "mysql", "gdb", "jq",
+}
+
+def command_word(tokens):
+    """Имя программы стадии: пропускает обёртки, их ключи, присваивания
+    переменных и разделитель `--`. Возвращает пустую строку, если не нашлось."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in STAGE_OPS or tok == "--":
+            i += 1
+            continue
+        if "=" in tok and not tok.startswith("-") and "/" not in tok.split("=")[0]:
+            i += 1                      # VAR=value перед командой
+            continue
+        if tok.startswith("-"):
+            i += 1                      # ключ обёртки
+            continue
+        name = os.path.basename(tok).lower()
+        if name in WRAPPERS:
+            i += 1
+            # у timeout первый неключевой аргумент — длительность
+            if name == "timeout":
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    i += 1
+                i += 1
+            continue
+        return name
+    return ""
 
 def heredoc_body_is_data(opening_line):
-    """True, если тело документа получатель запишет, а не исполнит."""
-    return not INTERPRETER.search(opening_line)
+    """True, если тело документа получатель запишет, а не исполнит.
+
+    Разбор по токенам, а не по шаблону: до перехода на них имя программы
+    искалось почти сразу после начала стадии, и обёртки (`env -i`,
+    `timeout 10`, `exec`, разделитель `--`) его отодвигали — тело исполнялось,
+    но считалось данными. Найдено двумя кругами внешнего ревью.
+    """
+    name = command_word(tokenize(opening_line))
+    if not name:
+        return False                    # не разобрали — не вырезаем
+    base = re.sub(r"[\d.]+$", "", name)  # python3.12 → python
+    return not (name in INTERPRETERS or base in INTERPRETERS or base == "python")
 
 def strip_heredocs(command):
     """Команда без тел heredoc-документов: остаётся то, что она исполняет.
@@ -174,13 +276,12 @@ def strip_heredocs(command):
     while i < len(lines):
         line = lines[i]
         out.append(line)
-        m = HEREDOC_OPEN.search(line)
+        delim = heredoc_delimiter(line)
         i += 1
-        if not m:
+        if not delim:
             continue
         if not heredoc_body_is_data(line):
             continue          # тело исполняется — оставляем его под проверку
-        delim = m.group(2)
         end = i
         while end < len(lines) and lines[end].strip() != delim:
             end += 1
@@ -188,6 +289,24 @@ def strip_heredocs(command):
             continue          # метка конца не найдена — тело не вырезаем
         i = end + 1           # пропустить тело вместе со строкой-меткой
     return "\n".join(out)
+
+def heredoc_delimiter(line):
+    """Метка документа, если строка ДЕЙСТВИТЕЛЬНО его открывает.
+
+    Оператор ищется среди токенов. До перехода на них шаблон принимал за
+    открывающий и маркер внутри кавычек (`echo '<<EOF'`), и в комментарии
+    (`echo ok # <<EOF`) — и вырезал тело несуществующего документа вместе
+    с настоящей командой, стоявшей следом. Это был пропуск, а не шум:
+    удаление за пределами репозитория исчезало из проверки. Найдено вторым
+    кругом внешнего ревью, подтверждено запуском.
+    """
+    if "<<" not in line:
+        return ""
+    toks = tokenize(line)
+    for i, tok in enumerate(toks):
+        if tok in ("<<", "<<-") and i + 1 < len(toks):
+            return toks[i + 1]
+    return ""
 
 # Пути после docker/podman относятся к файловой системе КОНТЕЙНЕРА и к границе
 # хоста отношения не имеют (issue #43, случай 4). Единственное исключение —
@@ -250,6 +369,71 @@ def container_scope(command):
             sources.append(head)
     return True, sources
 
+# Ключи docker/podman, чей аргумент — путь ХОСТА. «Всё после docker —
+# контейнерное» неверно: файлы сборки и конфигурации, тома, секреты, кеш,
+# образы для загрузки и сохранения, идентификаторы контейнеров живут на хосте.
+HOST_PATH_OPTS = {
+    "-v", "--volume", "--mount", "-f", "--file", "-c", "--config",
+    "--env-file", "--secret", "--build-context", "-i", "--input",
+    "-o", "--output", "--cache-from", "--cache-to", "--iidfile",
+    "--cidfile", "--label-file", "--authfile", "--security-opt",
+    "--device", "--tlscacert", "--tlscert", "--tlskey", "--contextdir",
+}
+
+# Подкоманды, у которых позиционный аргумент — путь хоста.
+HOST_POSITIONAL_SUBS = {"build", "cp", "load", "save", "import", "export"}
+
+def container_scope_tokens(tokens):
+    """(контейнерная ли стадия, пути хоста в ней). Разбор по токенам.
+
+    Пути внутри контейнера в кандидаты не попадают, пути хоста — попадают.
+    Список ключей неполон принципиально: неизвестный ключ со значением-путём
+    трактуется в пользу отказа только там, где значение похоже на путь хоста.
+    """
+    name = command_word(tokens)
+    if name not in ("docker", "podman"):
+        return False, []
+    host = []
+    sub = ""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in HOST_PATH_OPTS and i + 1 < len(tokens):
+            spec = tokens[i + 1]
+            if spec.startswith("type="):          # --mount type=bind,source=…
+                for part in spec.split(","):
+                    if part.startswith(("source=", "src=")):
+                        host.append(part.split("=", 1)[1])
+            elif "=" in spec and not spec.startswith(("/", ".", "~")):
+                host.append(spec.split("=", 1)[1])   # seccomp=/путь
+            else:
+                host.append(spec.split(":", 1)[0])   # /host:/container
+            i += 2
+            continue
+        if "=" in tok and tok.split("=", 1)[0] in HOST_PATH_OPTS:
+            host.append(tok.split("=", 1)[1].split(":", 1)[0])
+            i += 1
+            continue
+        if not sub and tok.lower() in HOST_POSITIONAL_SUBS:
+            sub = tok.lower()
+            i += 1
+            continue
+        i += 1
+    if sub:
+        # У `cp` путь хоста — аргумент без `контейнер:`; у остальных подкоманд
+        # позиционный аргумент относится к хосту.
+        seen_sub = False
+        for tok in tokens:
+            if tok.lower() == sub and not seen_sub:
+                seen_sub = True
+                continue
+            if not seen_sub or tok.startswith("-") or tok in STAGE_OPS:
+                continue
+            if ":" in tok and not tok.startswith(("/", ".", "~")):
+                continue          # `контейнер:/путь`
+            host.append(tok)
+    return True, host
+
 def path_candidates(command):
     """Всё, что в команде похоже на путь: аргументы, цели перенаправления.
 
@@ -259,24 +443,40 @@ def path_candidates(command):
     """
     normalized = normalize(command)          # уже без тел «пишущих» heredoc
     found = []
-    # Разбор идёт постадийно: сужение, законное для одной стадии, не должно
-    # распространяться на соседнюю. `docker compose up && rm -rf <наружу>` —
-    # две разные команды, и вторая обязана проверяться полностью.
-    for stage in STAGE_SPLIT.split(normalized):
-        if not stage.strip():
+
+    # Подстановки исполняет ХОСТ, где бы они ни стояли, — в том числе среди
+    # аргументов контейнера. Разбираются рекурсивно и ДО контейнерного сужения:
+    # иначе `docker run img "$(touch <наружу>)"` проходил границу, потому что
+    # вся стадия объявлялась контейнерной. Второй круг внешнего ревью.
+    for inner in substitutions(normalized):
+        found.extend(path_candidates(inner))
+
+    # Разбор постадийный: сужение, законное для одной стадии, не должно
+    # распространяться на соседнюю. Границы стадий берутся из ТОКЕНОВ, поэтому
+    # `;` внутри кавычек (`sh -c "echo /app; ls /tmp/x"`) стадию не разрывает —
+    # до перехода на токены это давало ложные срабатывания на аргументах,
+    # предназначенных контейнеру.
+    for stage_tokens in split_stages(tokenize(normalized)):
+        if not stage_tokens:
             continue
-        # Перенаправления реальны в любой стадии, включая docker: `docker ps >
-        # /outside/file` пишет на хост, а не в контейнер.
-        for match in REDIRECT.finditer(stage):
-            found.append(match.group("path"))
-        is_container, volume_sources = container_scope(stage)
+        # Перенаправления реальны в любой стадии, включая docker: вывод пишется
+        # на хост, а не в контейнер.
+        i = 0
+        while i < len(stage_tokens):
+            if stage_tokens[i] in (">", ">>") and i + 1 < len(stage_tokens):
+                found.append(stage_tokens[i + 1])
+                i += 2
+                continue
+            i += 1
+        is_container, host_paths = container_scope_tokens(stage_tokens)
         if is_container:
             # Остальные аргументы описывают файловую систему контейнера;
-            # проверять в ней нечего. Источники томов — реальные пути хоста.
-            found.extend(volume_sources)
+            # проверять в ней нечего. Пути хоста собраны отдельно.
+            found.extend(host_paths)
             continue
-        for token in SPLIT.split(stage):
-            token = token.strip("<>")
+        for token in stage_tokens:
+            if token in STAGE_OPS or token in (">", ">>", "<", "<<", "<<-"):
+                continue
             if not token or token.startswith("-"):
                 continue
             if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
@@ -284,3 +484,15 @@ def path_candidates(command):
             if "/" in token or token in (".", ".."):
                 found.append(token)
     return found
+
+def split_stages(tokens):
+    """Токены, разбитые по операторам верхнего уровня."""
+    stages, current = [], []
+    for tok in tokens:
+        if tok in STAGE_OPS:
+            stages.append(current)
+            current = []
+        else:
+            current.append(tok)
+    stages.append(current)
+    return stages
