@@ -11,12 +11,19 @@ export type ContractErrorCode =
   | 'merchant_id_required'
   | 'invalid_merchant_id'
   | 'idempotency_key_required'
+  | 'invalid_idempotency_key'
+  | 'malformed_request'
   | 'validation_failed'
   | 'idempotency_key_reuse'
   | 'request_in_progress'
   | 'payment_not_found'
   | 'payment_not_cancelable';
 
+/**
+ * Коды за границей контракта: неизвестный маршрут, чужой метод и отказ сервера
+ * контракт не описывает вовсе. Конверт 5.4 держим и там, но выдавать эти коды
+ * за часть контракта нельзя — `5xx` контракт объявляет своей границей прямо.
+ */
 export type OffContractErrorCode = 'not_found' | 'method_not_allowed' | 'internal_error';
 
 export type ErrorCode = ContractErrorCode | OffContractErrorCode;
@@ -64,6 +71,16 @@ export const idempotencyKeyRequired = (): ApiError =>
     'idempotency_key_required',
     'Заголовок Idempotency-Key обязателен при создании платежа: непустая строка до 255 символов',
   );
+
+export const invalidIdempotencyKey = (): ApiError =>
+  new ApiError(
+    400,
+    'invalid_idempotency_key',
+    'Idempotency-Key не должен быть длиннее 255 символов',
+  );
+
+export const malformedRequest = (reason: string): ApiError =>
+  new ApiError(400, 'malformed_request', `Тело запроса не разобрано: ${reason}`);
 
 export const validationFailed = (errors: Record<string, string>): ApiError =>
   new ApiError(422, 'validation_failed', 'Тело запроса не прошло валидацию', { errors });

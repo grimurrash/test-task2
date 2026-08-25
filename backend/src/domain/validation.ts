@@ -13,7 +13,9 @@ import {
 } from './payment.js';
 import {
   idempotencyKeyRequired,
+  invalidIdempotencyKey,
   invalidMerchantId,
+  malformedRequest,
   merchantIdRequired,
   validationFailed,
 } from './errors.js';
@@ -37,48 +39,44 @@ export function requireMerchantId(raw: string | string[] | undefined): string {
 }
 
 /**
- * Пустое значение приравнивается к отсутствию заголовка — так сказано
- * в контракте прямым текстом.
- *
- * Пробел B ревью контракта: границу 1–255 контракт объявляет схемой, а кода
- * на её нарушение не даёт. Временное чтение — тот же `idempotency_key_required`.
- * Правка контракта заменит здесь одну строку.
+ * Пустое значение приравнивается к отсутствию заголовка, слишком длинное —
+ * отдельный код: пробел B ревью контракта закрыт правкой (#32, PR #38),
+ * симметрично `invalid_merchant_id`.
  */
 export function requireIdempotencyKey(raw: string | string[] | undefined): string {
   const value = headerValue(raw);
   if (value === undefined || value.length === 0) throw idempotencyKeyRequired();
-  if (value.length > IDEMPOTENCY_KEY_MAX) throw idempotencyKeyRequired();
+  if (value.length > IDEMPOTENCY_KEY_MAX) throw invalidIdempotencyKey();
   return value;
 }
 
 /**
- * Разбор тела.
+ * Разбор тела — слой между заголовками и полями.
  *
- * Пробел A ревью контракта: неразобранное тело контракт не описывает ничем,
- * а перечень кодов закрыт восемью значениями. Временное чтение — 422
- * `validation_failed` с нарушением в поле `body`: единственный ответ,
- * проходящий валидацию против нынешнего файла.
+ * Пробел A ревью контракта закрыт правкой (#32, PR #38): «разбирать нечего» —
+ * это форма запроса, то есть 400 `malformed_request`, а не 422. Ось
+ * «400 — форма, 422 — разобранные поля» из RFC 9110 держится целиком.
  */
 export function parseBody(raw: string, contentType: string | undefined): Record<string, unknown> {
   if (contentType !== undefined) {
     const mediaType = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
     if (mediaType.length > 0 && mediaType !== 'application/json') {
-      throw validationFailed({ body: 'ожидается application/json' });
+      throw malformedRequest(`ожидается Content-Type application/json, получен ${mediaType}`);
     }
   }
   if (raw.trim().length === 0) {
-    throw validationFailed({ body: 'тело запроса обязательно' });
+    throw malformedRequest('тело запроса пусто');
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw validationFailed({ body: 'тело не разбирается как JSON' });
+    throw malformedRequest('не разбирается как JSON');
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw validationFailed({ body: 'тело обязано быть объектом JSON' });
+    throw malformedRequest('ожидается объект JSON');
   }
   return parsed as Record<string, unknown>;
 }

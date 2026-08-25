@@ -9,7 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
-import { ApiError } from './domain/errors.js';
+import { ApiError, malformedRequest } from './domain/errors.js';
 import type { Payment } from './domain/payment.js';
 import {
   parseBody,
@@ -77,9 +77,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new ApiError(422, 'validation_failed', 'Тело запроса не прошло валидацию', {
-          errors: { body: 'тело запроса слишком велико' },
-        }));
+        reject(malformedRequest('тело запроса слишком велико'));
         req.destroy();
         return;
       }
@@ -118,8 +116,8 @@ export function createServer(deps: AppDeps = {}): http.Server {
 
   const server = http.createServer((req, res) => {
     void handle(req, res).catch((error: unknown) => {
-      // Пробел E ревью контракта: отказ сервера контрактом не описан. Конверт
-      // 5.4 держим и здесь, код — вне перечня восьми, сказано вслух.
+      // Контракт объявляет 5xx своей границей: формат тела не гарантируется.
+      // Конверт 5.4 держим всё равно — клиенту от «границы контракта» не легче.
       console.error('Необработанный отказ:', error);
       if (!res.headersSent) {
         send(res, 500, {

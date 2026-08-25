@@ -71,14 +71,22 @@ describe('F7 · заголовок Idempotency-Key', () => {
     assert.equal(res.status, 201);
   });
 
-  // Пробел B ревью контракта: границу 1–255 контракт объявляет, а кода
-  // на её нарушение не даёт. Временное чтение — 400 idempotency_key_required.
-  it('ключ длиннее 255 символов отклоняется (пробел B, временное чтение)', async () => {
+  // Пробел B закрыт правкой контракта (#32, PR #38): отдельный код,
+  // симметрично invalid_merchant_id.
+  it('ключ длиннее 255 символов → 400 invalid_idempotency_key', async () => {
     const app = await startApp();
     const res = await app.create(validBody(), { key: 'k'.repeat(256) });
 
     assert.equal(res.status, 400);
-    assert.equal(asError(res.body).error.code, 'idempotency_key_required');
+    assert.equal(asError(res.body).error.code, 'invalid_idempotency_key');
+  });
+
+  it('отсутствие и длина различаются кодом, а не одним ответом на оба случая', async () => {
+    const app = await startApp();
+    const missing = await app.create(validBody(), { key: null });
+    const tooLong = await app.create(validBody(), { key: 'k'.repeat(300) });
+
+    assert.notEqual(asError(missing.body).error.code, asError(tooLong.body).error.code);
   });
 });
 
