@@ -16,23 +16,40 @@ function KeyChip({ value }: { value: string }) {
 
 // Тело ответа с подсветкой id/created_at для «того же платежа»: повтор виден
 // как повтор — те же значения, что были в ответе 201.
+//
+// Строковые значения обёрнуты в <bdi> (#76): управляющие bidi-символы
+// в недоверенном тексте (U+202E и родня) переворачивают своё значение —
+// это верное поведение показа «как есть», — но не утаскивают наши кавычки,
+// запятые и соседние строки JSON. Изоляция, не фильтрация: текст остаётся
+// ровно тем, что прислал сервер.
 function Payload({ body, highlight }: { body: unknown; highlight: boolean }) {
   const text = typeof body === 'string' ? body : JSON.stringify(body, null, 2)
-  if (!highlight) return <div className="payload">{text}</div>
   const lines = text.split('\n')
   return (
     <div className="payload">
       {lines.map((line, i) => {
-        const m = line.match(/^(\s*"(?:id|created_at)": )(.*?)(,?)$/)
         const tail = i < lines.length - 1 ? '\n' : ''
-        if (!m) return <Fragment key={i}>{line + tail}</Fragment>
-        return (
-          <Fragment key={i}>
-            {m[1]}
-            <em>{m[2]}</em>
-            {m[3] + tail}
-          </Fragment>
-        )
+        const hl = highlight && line.match(/^(\s*"(?:id|created_at)": )(.*?)(,?)$/)
+        if (hl) {
+          return (
+            <Fragment key={i}>
+              {hl[1]}
+              <em>{hl[2]}</em>
+              {hl[3] + tail}
+            </Fragment>
+          )
+        }
+        const str = line.match(/^(\s*"[^"]*": ")(.*)(",?)$/)
+        if (str) {
+          return (
+            <Fragment key={i}>
+              {str[1]}
+              <bdi>{str[2]}</bdi>
+              {str[3] + tail}
+            </Fragment>
+          )
+        }
+        return <Fragment key={i}>{line + tail}</Fragment>
       })}
     </div>
   )

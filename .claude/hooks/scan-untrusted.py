@@ -85,7 +85,9 @@ def main():
                 break
 
     try:
-        path = os.path.join(H.project_dir(), ".claude", "logs", "untrusted.jsonl")
+        # issue #54: журнал находок — доказательство работы сканера, и фикстурам
+        # набора в нём не место. До правки 167 записей из 182 были его образцами.
+        path = H.log_path("untrusted.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({
