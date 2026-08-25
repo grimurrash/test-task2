@@ -132,6 +132,20 @@ export function responseSchemaPointer(route: string, method: string, status: num
  * отправленное тестами, прогоняется через схему контракта, и вердикт схемы
  * обязан совпасть с вердиктом сервера.
  */
+/**
+ * Тело любого ответа 4xx обязано быть конвертом `schemas/Error` с кодом
+ * из перечня — включая маршруты, которых в контракте нет.
+ *
+ * До #94 сервис отвечал на чужой метод и чужой путь кодами вне перечня,
+ * и это не ловилось ничем: сверка A7 привязана к описанным путям, а такие
+ * ответы приходят там, где описанного пути нет по определению. Дыра нашлась
+ * QA, а не прогоном — и закрывается здесь.
+ */
+export function assertErrorEnvelope(status: number, body: unknown, what: string): void {
+  if (status < 400 || status >= 500) return;
+  assertValidAgainst('/components/schemas/Error', body, `Ответ ${String(status)} на ${what}`);
+}
+
 export function requestBodyValid(body: unknown): boolean {
   return validatorFor('/components/schemas/PaymentCreateRequest')(body);
 }

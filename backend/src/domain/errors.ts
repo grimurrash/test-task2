@@ -1,10 +1,9 @@
 /**
  * Формат ошибок 5.4: единый конверт `{"error": {code, message, details?}}`.
  *
- * Восемь кодов контракта — исчерпывающий перечень для тех ситуаций, которые
- * контракт описывает. Коды из `OFF_CONTRACT_CODES` описывают то, о чём контракт
- * молчит вовсе (чужой маршрут, чужой метод, отказ сервера): конверт держится
- * и там, но выдавать эти коды за часть контракта нельзя.
+ * Двенадцать кодов контракта — исчерпывающий перечень для всего, что контракт
+ * описывает, включая маршрутизацию (#94). За его границей остался только отказ
+ * сервера: `5xx` контракт объявляет своей границей прямо.
  */
 
 export type ContractErrorCode =
@@ -17,14 +16,19 @@ export type ContractErrorCode =
   | 'idempotency_key_reuse'
   | 'request_in_progress'
   | 'payment_not_found'
-  | 'payment_not_cancelable';
+  | 'payment_not_cancelable'
+  // Коды маршрутизации: путь вне описанных и метод, для пути не описанный.
+  // Внесены в контракт задачей #94 — прежде отвечали кодами вне перечня,
+  // и любой такой ответ нарушал A7. Находка QA #74.
+  | 'not_found'
+  | 'method_not_allowed';
 
 /**
- * Коды за границей контракта: неизвестный маршрут, чужой метод и отказ сервера
- * контракт не описывает вовсе. Конверт 5.4 держим и там, но выдавать эти коды
- * за часть контракта нельзя — `5xx` контракт объявляет своей границей прямо.
+ * За границей контракта остался только отказ сервера: `5xx` контракт объявляет
+ * своей границей прямо — формат тела там не гарантируется. Конверт 5.4 держим
+ * и в нём, но выдавать этот код за часть контракта нельзя.
  */
-export type OffContractErrorCode = 'not_found' | 'method_not_allowed' | 'internal_error';
+export type OffContractErrorCode = 'internal_error';
 
 export type ErrorCode = ContractErrorCode | OffContractErrorCode;
 
@@ -58,12 +62,8 @@ export class ApiError extends Error {
 export const merchantIdRequired = (): ApiError =>
   new ApiError(400, 'merchant_id_required', 'Заголовок X-Merchant-Id обязателен');
 
-export const invalidMerchantId = (): ApiError =>
-  new ApiError(
-    400,
-    'invalid_merchant_id',
-    'X-Merchant-Id должен быть непустой строкой до 64 символов из набора A–Z a–z 0–9 . _ -',
-  );
+export const invalidMerchantId = (reason: string): ApiError =>
+  new ApiError(400, 'invalid_merchant_id', `X-Merchant-Id не принят: ${reason}`);
 
 export const idempotencyKeyRequired = (): ApiError =>
   new ApiError(
