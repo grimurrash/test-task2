@@ -1,0 +1,71 @@
+/* Оформление страницы = токены дизайна (`design/tokens.css`, задача #10),
+   переложенные на переменные обвязки (`--page-*`) и справочника (`--scalar-*`).
+   Значения здесь не выдумываются: каждое берётся из токена, а второй аргумент
+   `var()` — нейтральный дефолт на случай, когда файла токенов рядом нет
+   (тогда сборка кладёт заглушку и страница остаётся читаемой).
+
+   Из макета берутся только цвет и типографика: сетку, компоненты и состояния
+   справочника Scalar рисует сам. */
+
+:root {
+  --page-font: var(
+    --font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif
+  );
+  --page-mono: var(
+    --font-family-mono,
+    ui-monospace,
+    SFMono-Regular,
+    'SF Mono',
+    Menlo,
+    Consolas,
+    'Liberation Mono',
+    monospace
+  );
+
+  --page-bg: var(--color-bg, #ffffff);
+  --page-header-bg: var(--color-ink, #ffffff);
+  --page-header-text: var(--color-ink-text, #1c1e21);
+  --page-header-muted: var(--color-ink-text-muted, #5c6169);
+  --page-header-border: var(--color-ink-border, #e3e5e8);
+  --page-text: var(--color-text, #1c1e21);
+  --page-muted: var(--color-text-muted, #5c6169);
+  --page-border: var(--color-border, #e3e5e8);
+  --page-accent: var(--color-accent, #1f6feb);
+  --page-surface: var(--color-surface, #ffffff);
+  --page-code-bg: var(--color-surface-sunken, #f1f3f5);
+  --page-pre-bg: var(--color-ink, #1c1e21);
+  --page-pre-text: var(--color-ink-text, #f4f5f6);
+
+  --page-radius: var(--radius-card, 8px);
+  --page-line-height: var(--line-height-body, 1.65);
+
+  /* Справочник. Своих шрифтовых файлов Scalar не грузит
+     (withDefaultFonts: false) — страница обязана работать без сети. */
+  --scalar-font: var(--page-font);
+  --scalar-font-code: var(--page-mono);
+
+  --scalar-color-1: var(--color-text, #1c1e21);
+  --scalar-color-2: var(--color-text-muted, #5c6169);
+  --scalar-color-3: var(--color-text-faint, #94a0ae);
+  --scalar-color-accent: var(--page-accent);
+  --scalar-background-1: var(--color-surface, #ffffff);
+  --scalar-background-2: var(--color-bg, #f6f7f9);
+  --scalar-background-3: var(--color-surface-sunken, #eef1f5);
+  --scalar-background-accent: var(--color-accent-bg, #eceafd);
+  --scalar-border-color: var(--color-border, #e3e5e8);
+  --scalar-radius: var(--radius-small, 6px);
+  --scalar-radius-lg: var(--radius-card, 12px);
+
+  /* Методы операций в сайдбаре — цвета смысла из того же файла токенов. */
+  --scalar-color-green: var(--color-created, #17805c);
+  --scalar-color-blue: var(--color-repeat, #2160c4);
+  --scalar-color-orange: var(--color-conflict, #b45309);
+  --scalar-color-red: var(--color-error, #d92d20);
+}

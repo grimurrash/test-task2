@@ -1,0 +1,114 @@
+/* Обвязка страницы: шапка с навигацией и типографика раздела со сценариями.
+   Внешний вид самого справочника рисует Scalar — здесь только то, чего у него
+   нет. Цвета и шрифты вынесены в theme.css. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--page-font);
+  color: var(--page-text);
+  background: var(--page-bg);
+}
+
+/* Шапка «чернильная» — как в макете песочницы: проверяющий открывает две
+   страницы подряд и должен видеть одну систему, а не две. */
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--page-header-border);
+  background: var(--page-header-bg);
+  color: var(--page-header-text);
+}
+
+.site-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.site-header nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
+.site-header a {
+  color: var(--page-header-muted);
+  text-decoration: none;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.site-header a:hover {
+  color: var(--page-header-text);
+}
+
+.site-header a.current {
+  color: var(--page-header-text);
+  border-bottom-color: var(--page-accent);
+}
+
+/* Справочник занимает остаток экрана и прокручивается сам. */
+body.wide #scalar {
+  height: calc(100vh - 49px);
+  overflow: auto;
+}
+
+.prose {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 5rem;
+  line-height: 1.65;
+}
+
+.prose h1 {
+  font-size: 1.75rem;
+  margin: 0 0 1rem;
+}
+
+.prose h2 {
+  font-size: 1.2rem;
+  margin: 2.5rem 0 0.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--page-border);
+}
+
+.prose a {
+  color: var(--page-accent);
+}
+
+.prose code {
+  font-family: var(--page-mono);
+  font-size: 0.875em;
+  background: var(--page-code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.prose pre {
+  background: var(--page-pre-bg);
+  color: var(--page-pre-text);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  /* Команды переносятся, а не уезжают за край: их копируют целиком, и правая
+     половина строки не должна прятаться в горизонтальной прокрутке. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.prose pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.prose strong {
+  font-weight: 600;
+}
