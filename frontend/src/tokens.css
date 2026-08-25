@@ -1,0 +1,198 @@
+/*
+ * Дизайн-токены · Идемпотентный платёжный сервис
+ * Единый источник значений для песочницы и страницы документации.
+ * Фронт (#12) и документация (#13) импортируют этот файл как есть
+ * и берут значения только через var(--…) — не хардкодят.
+ *
+ * Стилевое направление (решение сэра, сессия 3): строгий финтех —
+ * чернильная шапка, индиго-акцент, сдержанные тени, холодные нейтрали.
+ *
+ * Правило цвета: цвет зарезервирован за СМЫСЛОМ ответа сервера
+ * (created / repeat / conflict / error / network) и статусом платежа.
+ * Действия — «чернильные», индиго — только фокус, ссылки и активные
+ * элементы навигации; со смыслами он не конкурирует.
+ *
+ * Тема одна, светлая. Имена без слова "light" — тёмную тему можно
+ * добавить переопределением значений, без переименований.
+ */
+
+:root {
+  /* ------------------------------------------------------------------ */
+  /* Палитра: поверхность и текст                                        */
+  /* ------------------------------------------------------------------ */
+  --color-bg: #f3f5f8;             /* фон страницы */
+  --color-surface: #ffffff;        /* карточки, панели */
+  --color-surface-sunken: #eef1f5; /* утопленные зоны: тела ответов, чипы */
+  --color-border: #e3e7ec;         /* границы карточек и полей */
+  --color-border-strong: #c6cdd6;  /* границы при наведении, разделители */
+
+  --color-text: #0f172a;           /* основной текст */
+  --color-text-muted: #5b6472;     /* вторичный: подписи, время, подсказки */
+  --color-text-faint: #94a0ae;     /* третичный: плейсхолдеры, счётчики */
+  --color-text-inverse: #ffffff;   /* текст на тёмном/цветном */
+
+  /* Чернильная зона: шапка страниц и первичные действия */
+  --color-ink: #0e1420;            /* фон шапки, primary-кнопка */
+  --color-ink-raised: #1b2433;     /* приподнятые элементы на чернильном */
+  --color-ink-border: #2a3547;     /* границы на чернильном */
+  --color-ink-text: #eef2f7;       /* основной текст на чернильном */
+  --color-ink-text-muted: #8e99ab; /* вторичный текст на чернильном */
+
+  /* Индиго-акцент: фокус, ссылки, активная навигация. Не смысл ответа. */
+  --color-accent: #4f46e5;
+  --color-accent-bg: #eceafd;
+
+  /* ------------------------------------------------------------------ */
+  /* Семантика ответов сервера — стержень песочницы (U3)                 */
+  /* created  = 201, новый платёж                                        */
+  /* repeat   = 200 на повтор, ТОТ ЖЕ платёж                             */
+  /* conflict = 409: конфликт тела, гонка, отмена завершённого           */
+  /* error    = 422 валидация тела и 400 ошибки заголовков               */
+  /* network  = ответ не получен                                         */
+  /* ------------------------------------------------------------------ */
+  --color-created: #17805c;
+  --color-created-bg: #e6f5ef;
+  --color-created-border: #abdcc8;
+
+  --color-repeat: #2160c4;
+  --color-repeat-bg: #e9f0fc;
+  --color-repeat-border: #b5cdf0;
+
+  --color-conflict: #b45309;
+  --color-conflict-bg: #fdf2e3;
+  --color-conflict-border: #f0d5a8;
+
+  --color-error: #d92d20;
+  --color-error-bg: #feecea;
+  --color-error-border: #f6c1bb;
+
+  --color-network: #667085;
+  --color-network-bg: #eef1f4;
+  --color-network-border: #c6cdd6;
+
+  /* ------------------------------------------------------------------ */
+  /* Статусы платежа (F13–F18) — чипы в списке платежей                  */
+  /* ------------------------------------------------------------------ */
+  --color-status-pending: #9a6700;
+  --color-status-pending-bg: #fbf1d2;
+  --color-status-succeeded: var(--color-created);
+  --color-status-succeeded-bg: var(--color-created-bg);
+  --color-status-failed: var(--color-error);
+  --color-status-failed-bg: var(--color-error-bg);
+  --color-status-canceled: #667085;
+  --color-status-canceled-bg: #e9ecf0;
+
+  /* ------------------------------------------------------------------ */
+  /* Прочие акценты                                                      */
+  /* ------------------------------------------------------------------ */
+  --color-focus: var(--color-accent);   /* фокус-кольцо */
+  --color-code-bg: var(--color-ink);    /* тёмная панель curl-примеров */
+  --color-code-text: #e6edf5;
+  --color-code-highlight: #9ec1f7;              /* акцент в теле ответа: тот же id/created_at */
+  --color-code-highlight-bg: rgba(79, 108, 176, 0.35);
+
+  /* ------------------------------------------------------------------ */
+  /* Типографика                                                         */
+  /* Inter подключается страницей (Google Fonts или npm-пакет у фронта); */
+  /* без сети деградация в системный стек — молча и без сдвигов сетки.   */
+  /* ------------------------------------------------------------------ */
+  --font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-family-mono: "JetBrains Mono", ui-monospace, "SF Mono",
+                      "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --font-size-overline: 11px; /* надзаголовки секций, капс с разрядкой */
+  --font-size-caption: 12px;  /* метки, время, счётчики */
+  --font-size-small: 13px;    /* вторичный текст, чипы, таблицы */
+  --font-size-body: 14px;     /* основной текст, поля, кнопки */
+  --font-size-h3: 16px;       /* заголовки карточек */
+  --font-size-h2: 19px;       /* заголовки разделов */
+  --font-size-h1: 23px;       /* заголовок страницы */
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --line-height-tight: 1.3;   /* заголовки, чипы */
+  --line-height-body: 1.55;   /* текст, поля */
+
+  --letter-spacing-tight: -0.01em;  /* заголовки h1–h2 */
+  --letter-spacing-wide: 0.08em;    /* overline-надзаголовки */
+
+  /* ------------------------------------------------------------------ */
+  /* Отступы: шкала 4px. Промежуточных значений не выдумывать.           */
+  /* ------------------------------------------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* ------------------------------------------------------------------ */
+  /* Геометрия и тени                                                    */
+  /* ------------------------------------------------------------------ */
+  --radius-small: 6px;   /* чипы, бейджи, инпуты */
+  --radius-card: 12px;   /* карточки, панели, кнопки */
+  --radius-pill: 999px;  /* статус-чипы, счётчики */
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.05),
+                 0 4px 12px rgba(16, 24, 40, 0.06);
+  --shadow-raised: 0 6px 20px rgba(16, 24, 40, 0.14);
+
+  --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-focus);
+
+  /* ------------------------------------------------------------------ */
+  /* Состояния компонентов                                               */
+  /* Кнопка первичная («Отправить»)                                      */
+  /* ------------------------------------------------------------------ */
+  --button-primary-bg: var(--color-ink);
+  --button-primary-bg-hover: var(--color-ink-raised);
+  --button-primary-text: var(--color-text-inverse);
+
+  /* Кнопка вторичная («Отправить ещё раз тот же запрос», «Сгенерировать») */
+  --button-secondary-bg: var(--color-surface);
+  --button-secondary-bg-hover: var(--color-surface-sunken);
+  --button-secondary-text: var(--color-text);
+  --button-secondary-border: var(--color-border-strong);
+
+  /* Кнопка-сценарий (U4): плоская, во всю ширину блока */
+  --button-ghost-bg: transparent;
+  --button-ghost-bg-hover: var(--color-surface-sunken);
+  --button-ghost-text: var(--color-text);
+
+  /* Общее для всех кнопок */
+  --button-disabled-opacity: 0.45;
+  --button-padding-y: var(--space-2);
+  --button-padding-x: var(--space-4);
+
+  /* Поля ввода */
+  --input-bg: var(--color-surface);
+  --input-border: var(--color-border-strong);
+  --input-border-focus: var(--color-focus);
+  --input-border-error: var(--color-error);
+  --input-bg-error: var(--color-error-bg);
+  --input-bg-disabled: var(--color-surface-sunken);
+  --input-text-disabled: var(--color-text-faint);
+  --input-placeholder: var(--color-text-faint);
+  --input-padding-y: var(--space-2);
+  --input-padding-x: var(--space-3);
+
+  /* Таймлайн журнала обмена */
+  --timeline-rail: var(--color-border);  /* вертикальная ось */
+  --timeline-dot-size: 10px;             /* точка события, цвет — семантика ответа */
+
+  /* ------------------------------------------------------------------ */
+  /* Раскладка                                                           */
+  /* ------------------------------------------------------------------ */
+  --layout-max-width: 1440px;
+  --layout-narrow: 1100px;  /* ниже этой ширины колонки складываются в столбец.
+                               var() внутри @media не работает — в media-запросах
+                               брейкпоинт пишется числом 1100px, этот токен
+                               документирует значение */
+  --column-form: 320px;     /* левая колонка песочницы */
+  --column-payments: 300px; /* правая колонка песочницы */
+  --column-toc: 240px;      /* оглавление страницы документации */
+}
