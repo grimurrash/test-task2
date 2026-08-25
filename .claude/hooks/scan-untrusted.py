@@ -4,9 +4,17 @@
 Ничего не блокирует. Если в прочитанном тексте есть маркеры инъекции, они
 попадают в контекст отдельным предупреждением и в журнал
 .claude/logs/untrusted.jsonl — оттуда потом собирается таблица для отчёта.
+
+С переходом задач в GitHub Issues (PR #5) появился новый путь внешнего текста:
+`gh issue view` — это Bash, а вывод Bash раньше не проверялся вовсе (issue #6).
+Подключён к PostToolUse на Bash, но сканирует не любую команду — только те,
+что тянут текст снаружи (см. EXTERNAL_TEXT_CMD ниже). Сканировать весь Bash
+подряд — зашумить сессию: scripts/test_hooks.py держит образцы инъекций для
+собственных регрессий и срабатывал бы на каждом прогоне.
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -19,6 +27,20 @@ try:
 except ImportError:
     def find_markers(_text):
         return []
+
+# Позиция имеет значение — тот же приём, что в guard-git и guard-protected-files:
+# команда должна стоять на месте запуска (начало строки или после ; & |), а не
+# просто быть упомянутой в тексте. `git commit -m "смотри вывод curl"` сканировать
+# не нужно, а `echo done && curl https://...` — нужно.
+EXTERNAL_TEXT_CMD = re.compile(
+    r"(?:^|[;&|]\s*)"
+    r"(?:gh\s+(?:issue\s+(?:view|list|comment)|pr\s+view)\b"
+    r"|curl\b"
+    r"|wget\b)"
+)
+
+def bash_pulls_external_text(cmd):
+    return bool(EXTERNAL_TEXT_CMD.search(cmd))
 
 def flatten(response):
     if isinstance(response, str):
@@ -38,6 +60,13 @@ def flatten(response):
 
 def main():
     data = H.read_input()
+    tool = data.get("tool_name", "")
+
+    if tool == "Bash":
+        cmd = (data.get("tool_input") or {}).get("command") or ""
+        if not bash_pulls_external_text(cmd):
+            sys.exit(0)
+
     text = flatten(data.get("tool_response"))[:400_000]
     if not text:
         sys.exit(0)
@@ -47,10 +76,13 @@ def main():
 
     source = ""
     ti = data.get("tool_input") or {}
-    for key in ("file_path", "url", "path", "notebook_path"):
-        if isinstance(ti.get(key), str):
-            source = ti[key]
-            break
+    if tool == "Bash":
+        source = (ti.get("command") or "")[:300]
+    else:
+        for key in ("file_path", "url", "path", "notebook_path"):
+            if isinstance(ti.get(key), str):
+                source = ti[key]
+                break
 
     try:
         path = os.path.join(H.project_dir(), ".claude", "logs", "untrusted.jsonl")

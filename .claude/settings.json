@@ -56,6 +56,7 @@
       {
         "matcher": "Bash",
         "hooks": [
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/scan-untrusted.py\"" },
           { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/mark-verify.py\"" }
         ]
       }
