@@ -151,8 +151,28 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "export CLAUDE_HOOK_STATE_DIR=/tmp/своё"}}, "deny"),
     ("guard-protected-files.py", "подмена после разделителя ловится",
      {"tool_name": "Bash", "tool_input": {"command": "cd /tmp && env CLAUDE_HOOK_STATE_DIR=/tmp/своё git status"}}, "deny"),
-    ("guard-protected-files.py", "упоминание переменной состояния — не задание",
-     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'состояние уводится через CLAUDE_HOOK_STATE_DIR=путь'"}}, "allow"),
+    # Формы, на которых сломалась первая версия шаблона. Первые три показало
+    # внешнее ревью (codex), четвёртую нашли, проверяя его находку: второе
+    # присваивание в цепочке проще всех перечисленных им. Пятая — закавыченная
+    # форма: сейчас её снимает normalize(), и кейс стоит здесь затем, чтобы
+    # правка normalize не открыла дыру молча.
+    ("guard-protected-files.py", "подмена через env -i ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "env -i CLAUDE_HOOK_STATE_DIR=/tmp/своё git status"}}, "deny"),
+    ("guard-protected-files.py", "подмена через declare -x ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "declare -x CLAUDE_HOOK_STATE_DIR=/tmp/своё"}}, "deny"),
+    ("guard-protected-files.py", "подмена через typeset -x ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "typeset -x CLAUDE_HOOK_STATE_DIR=/tmp/своё"}}, "deny"),
+    ("guard-protected-files.py", "второе присваивание в цепочке ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "PATH=/usr/bin CLAUDE_HOOK_STATE_DIR=/tmp/своё git status"}}, "deny"),
+    ("guard-protected-files.py", "закавыченное присваивание ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "export \"CLAUDE_HOOK_STATE_DIR=/tmp/своё\""}}, "deny"),
+    # Названная цена: отличить присваивание в тексте сообщения от присваивания
+    # в команде надёжно нельзя, и здесь выбран отказ. Явная цена лучше
+    # незаметной дыры — сообщение переформулируется, дыра нет.
+    ("guard-protected-files.py", "присваивание в тексте сообщения — тоже отказ, цена названа",
+     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'состояние уводится через CLAUDE_HOOK_STATE_DIR=путь'"}}, "deny"),
+    ("guard-protected-files.py", "голое упоминание переменной — не задание",
+     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'каталог состояния задаётся переменной CLAUDE_HOOK_STATE_DIR'"}}, "allow"),
 ]
 
 INJECTION_CASE = {
@@ -964,7 +984,16 @@ def _main():
         changed = sorted(set(before) ^ set(after)) + sorted(
             k for k in before if k in after and before[k] != after[k])
         tail = _tail(log_path, log_before)
+        unlock_rel = os.path.join(".claude", "state", "unlock.json")
         isolation_cases = [
+            # Регрессия, названная в задаче по смыслу. Она стоит здесь, на
+            # двойнике, а не на настоящем состоянии: тут пропуск заведомо выдан,
+            # и проверка не зависит ни от того, открывал ли сэр зону, ни от того,
+            # что делает в этот момент соседняя сессия.
+            ("пропуск, выданный до прогона, жив после прогона",
+             before.get(unlock_rel) == after.get(unlock_rel),
+             "unlock.json двойника побайтно тот же" if before.get(unlock_rel) == after.get(unlock_rel)
+             else "ЗАТЁРТ прогоном"),
             ("двойник не изменился ни в одном файле", not changed,
              ("изменены: %s" % ", ".join(changed)) if changed
              else "%d файла совпали побайтно" % len(before)),
@@ -979,15 +1008,27 @@ def _main():
     finally:
         shutil.rmtree(double, ignore_errors=True)
 
-    print("\n  боевое состояние после прогона — сторож, а не восстановление")
+    print("\n  боевое состояние после прогона — наблюдение, не проверка")
     # Раньше на этом месте боевые файлы возвращались из снимка. Возвращать
-    # больше нечего: их никто не трогал. Здесь только сверка — и она смотрит
-    # на подписи набора в дописанном хвосте, а не на размер файла: соседние
-    # сессии пишут в те же журналы, и «размер не изменился» краснело бы не про
-    # изоляцию.
-    for title, ok, detail in prod_checks(prod_before_run):
-        failures += 0 if ok else 1
-        print("    %s %-46s %s" % ("✓" if ok else "✗", title, detail))
+    # больше нечего: их никто не трогал.
+    #
+    # Почему это НЕ засчитывается в провалы. Найденное здесь не приписывается
+    # этому прогону: он пишет только в свой каталог состояния — это свойство
+    # run(), а не измерение, — значит следы в боевых файлах оставил кто-то
+    # другой. Пока в репозитории есть копии с непропатченным набором, соседний
+    # прогон удаляет боевой unlock.json на своё время и сыплет фикстуры;
+    # краснеть от этого чужой сессии — ложная тревога, а она обесценивает
+    # механизм не меньше пропуска.
+    #
+    # Проверяемое утверждение живёт выше, на двойнике: там пропуск заведомо
+    # выдан, состояние управляемо, и результат зависит только от нашего кода.
+    # Здесь — сторож: он называет вслух, что застал, и это ценно само по себе.
+    seen = prod_checks(prod_before_run)
+    for title, ok, detail in seen:
+        print("    %s %-46s %s" % ("✓" if ok else "⚠", title, detail))
+    if any(not ok for _, ok, _ in seen):
+        print("    ⚠ следы оставлены не этим прогоном: он писал только в %s." % STATE_DIR)
+        print("      Похоже на параллельный прогон непропатченного набора из другой копии.")
 
     print("\n%s" % ("ВСЁ ЗЕЛЁНОЕ" if failures == 0 else "ПРОВАЛОВ: %d" % failures))
     return 1 if failures else 0
