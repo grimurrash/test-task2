@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Макет · Документация Payments API</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ==========================================================================
+   Макет страницы документации (issue #10, п. 3).
+   Направление — строгий финтех, в паре с sandbox.html: чернильная шапка,
+   индиго-акцент в навигации, тёмные панели кода.
+   Страница в реальности собирается Scalar-ом из openapi/openapi.yaml (D2);
+   макет задаёт структуру, токены и вид ключевых блоков — шапки, оглавления,
+   раздела «Идемпотентность», curl-примера и обязательных таблиц (F17, 5.4).
+   ========================================================================== */
+* { box-sizing: border-box; margin: 0; }
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.page { max-width: var(--layout-max-width); margin: 0 auto; padding: var(--space-4); }
+
+/* --- Чернильная шапка ------------------------------------------------------- */
+.topbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  background: var(--color-ink);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-raised);
+  color: var(--color-ink-text);
+}
+.brand .overline {
+  font-size: var(--font-size-overline); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wide); text-transform: uppercase;
+  color: var(--color-ink-text-muted);
+}
+.brand h1 {
+  font-size: var(--font-size-h1); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-tight); line-height: var(--line-height-tight);
+  margin-top: var(--space-1);
+}
+.version {
+  font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold);
+  color: var(--color-text-inverse); background: var(--color-accent);
+  border-radius: var(--radius-pill); padding: 2px var(--space-3);
+}
+.baseurl {
+  margin-left: auto;
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  color: var(--color-ink-text-muted);
+  background: var(--color-ink-raised); border: 1px solid var(--color-ink-border);
+  padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill);
+}
+
+/* --- Оглавление + контент --------------------------------------------------- */
+.layout {
+  display: grid; gap: var(--space-4); margin-top: var(--space-4);
+  grid-template-columns: var(--column-toc) minmax(0, 1fr);
+  align-items: start;
+}
+.toc {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  padding: var(--space-3); font-size: var(--font-size-small);
+  position: sticky; top: var(--space-4);
+}
+.toc .toc-group {
+  font-size: var(--font-size-overline); font-weight: var(--font-weight-semibold);
+  color: var(--color-text-faint); text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  margin: var(--space-4) var(--space-2) var(--space-1);
+}
+.toc .toc-group:first-child { margin-top: var(--space-1); }
+.toc a {
+  display: block; color: var(--color-text-muted); text-decoration: none;
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-small);
+  border-left: 2px solid transparent;
+}
+.toc a.active {
+  background: var(--color-accent-bg); color: var(--color-accent);
+  border-left-color: var(--color-accent); font-weight: var(--font-weight-medium);
+}
+.toc .m { font-family: var(--font-family-mono); font-size: var(--font-size-overline);
+  font-weight: var(--font-weight-semibold); margin-right: var(--space-1); }
+.m--post { color: var(--color-created); }
+.m--get { color: var(--color-repeat); }
+
+.content { min-width: 0; }
+.section {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  padding: var(--space-6); margin-bottom: var(--space-4);
+}
+.section h2 {
+  font-size: var(--font-size-h2); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-tight); margin-bottom: var(--space-3);
+}
+.section h3 { font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); margin: var(--space-5) 0 var(--space-2); }
+.section p { margin-bottom: var(--space-3); }
+.section p:last-child { margin-bottom: 0; }
+.mono { font-family: var(--font-family-mono); }
+code {
+  font-family: var(--font-family-mono); font-size: var(--font-size-small);
+  background: var(--color-surface-sunken); border-radius: var(--radius-small);
+  padding: 1px var(--space-1);
+}
+
+/* Выносной блок внутри раздела «Идемпотентность» */
+.callout {
+  border: 1px solid var(--color-accent-bg); border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-bg); border-radius: var(--radius-small);
+  padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3);
+  font-size: var(--font-size-small);
+}
+
+/* --- Блок curl-примера ------------------------------------------------------ */
+.codeblock { position: relative; margin: var(--space-3) 0; }
+.codeblock pre {
+  background: var(--color-code-bg); color: var(--color-code-text);
+  font-family: var(--font-family-mono); font-size: var(--font-size-small);
+  line-height: 1.7; border-radius: var(--radius-card);
+  padding: var(--space-8) var(--space-4) var(--space-4); overflow-x: auto;
+}
+.codeblock .copy {
+  position: absolute; top: var(--space-2); right: var(--space-2);
+  font: inherit; font-size: var(--font-size-caption); cursor: pointer;
+  color: var(--color-ink-text); background: var(--color-ink-raised);
+  border: 1px solid var(--color-ink-border); border-radius: var(--radius-small);
+  padding: 2px var(--space-2);
+}
+.codeblock .lang {
+  position: absolute; top: var(--space-2); left: var(--space-3);
+  font-size: var(--font-size-overline); letter-spacing: var(--letter-spacing-wide);
+  text-transform: uppercase; color: var(--color-ink-text-muted);
+}
+
+/* --- Таблицы ---------------------------------------------------------------- */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: var(--font-size-small); }
+th, td { text-align: left; padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border); vertical-align: top; }
+th { font-size: var(--font-size-overline); text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide); color: var(--color-text-faint); }
+.status-pill { font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  border-radius: var(--radius-pill); padding: 1px var(--space-2); white-space: nowrap; }
+.pill--201 { color: var(--color-created); background: var(--color-created-bg); }
+.pill--200 { color: var(--color-repeat); background: var(--color-repeat-bg); }
+.pill--400 { color: var(--color-error); background: var(--color-error-bg); }
+.pill--422 { color: var(--color-error); background: var(--color-error-bg); }
+.pill--409 { color: var(--color-conflict); background: var(--color-conflict-bg); }
+.pill--404 { color: var(--color-network); background: var(--color-network-bg); }
+.pill--succeeded { color: var(--color-status-succeeded); background: var(--color-status-succeeded-bg); }
+.pill--failed { color: var(--color-status-failed); background: var(--color-status-failed-bg); }
+.pill--pending { color: var(--color-status-pending); background: var(--color-status-pending-bg); }
+
+/* --- Образец секции эндпоинта ----------------------------------------------- */
+.endpoint-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.method-badge {
+  font-family: var(--font-family-mono); font-size: var(--font-size-small);
+  font-weight: var(--font-weight-semibold); border-radius: var(--radius-small);
+  padding: 2px var(--space-2);
+  color: var(--color-created); background: var(--color-created-bg);
+}
+.endpoint-title .path { font-family: var(--font-family-mono); font-size: var(--font-size-h3); overflow-wrap: anywhere; }
+.req { font-size: var(--font-size-caption); color: var(--color-error); font-weight: var(--font-weight-medium); }
+
+.legend {
+  margin-top: var(--space-2); font-size: var(--font-size-caption);
+  color: var(--color-text-faint); border-top: 1px dashed var(--color-border-strong);
+  padding-top: var(--space-2);
+}
+
+/* --- Узкий экран: оглавление уходит наверх ---------------------------------- */
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .layout > * { min-width: 0; }
+  .toc { position: static; }
+  .baseurl { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Шапка -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="overline">Идемпотентный платёжный сервис</div>
+      <h1>Payments API</h1>
+    </div>
+    <span class="version">v1 · OpenAPI 3.1</span>
+    <span class="baseurl">http://localhost:8080</span>
+  </header>
+
+  <div class="layout">
+
+    <!-- Оглавление -->
+    <nav class="toc" aria-label="Оглавление">
+      <div class="toc-group">Начало</div>
+      <a href="#">Обзор</a>
+      <a href="#" class="active">Идемпотентность</a>
+      <a href="#">Тестовые суммы</a>
+      <div class="toc-group">Эндпоинты</div>
+      <a href="#"><span class="m m--post">POST</span>/v1/payments</a>
+      <a href="#"><span class="m m--get">GET</span>/v1/payments/{id}</a>
+      <a href="#"><span class="m m--post">POST</span>/v1/payments/{id}/cancel</a>
+      <a href="#"><span class="m m--get">GET</span>/v1/payments</a>
+      <div class="toc-group">Справочники</div>
+      <a href="#">Коды ошибок</a>
+    </nav>
+
+    <!-- Контент -->
+    <main class="content">
+
+      <section class="section">
+        <h2>Идемпотентность</h2>
+        <p><strong>Ключ идемпотентности</strong> — это ваша страховка от двойного списания.
+        Вы придумываете уникальную строку (обычно UUID), кладёте её в заголовок
+        <code>Idempotency-Key</code> при создании платежа — и с этого момента сервер
+        гарантирует: сколько бы раз запрос ни повторился, платёж будет один.</p>
+
+        <div class="callout">
+          <strong>Правило одной строкой.</strong> Один ключ + одно тело = один платёж,
+          сколько бы раз вы ни отправили запрос.
+        </div>
+
+        <h3>Что вернёт сервер</h3>
+        <p><strong>Первый запрос</strong> отвечает <code>201</code> — платёж создан.
+        <strong>Повтор с тем же ключом и тем же телом</strong> отвечает <code>200</code>
+        и возвращает тот же ресурс — тот же <code>id</code>, тот же <code>created_at</code>,
+        байт-в-байт. По коду ответа клиент отличает «создал» от «вернул существующий».</p>
+        <p><strong>Тот же ключ с другим телом</strong> — ошибка <code>409
+        idempotency_key_reuse</code>: сервер отказывается угадывать, какое из двух тел
+        правильное. Существующий платёж при этом не изменяется.</p>
+        <p><strong>Два запроса одновременно</strong> — платёж всё равно один. Проигравший
+        запрос получит либо тот же ресурс, либо <code>409 request_in_progress</code> —
+        тогда просто повторите его: придёт <code>200</code> с готовым платежом.
+        Второй <code>id</code> не возникает никогда.</p>
+
+        <h3>Сколько живёт ключ</h3>
+        <p>24 часа (TTL по умолчанию). После истечения тот же ключ создаст новый платёж —
+        поэтому ключ не переиспользуют между разными заказами, а генерируют на каждый заказ свой.</p>
+        <p>Ключи изолированы в пределах мерчанта: одинаковый ключ у разных
+        <code>X-Merchant-Id</code> — это два независимых платежа.</p>
+
+        <h3>Пример</h3>
+        <div class="codeblock">
+          <span class="lang">bash</span>
+          <button class="copy" type="button">Копировать</button>
+<pre>curl -X POST http://localhost:8080/v1/payments \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 3f9c1b8e-5a02-4d67-9c11-8de402aa71f5" \
+  -H "X-Merchant-Id: demo-shop-a" \
+  -d '{
+    "amount_minor": 149000,
+    "currency": "RUB",
+    "order_id": "ORD-1042",
+    "description": "Подписка PRO, август"
+  }'</pre>
+        </div>
+        <p>Отправьте команду дважды: первый ответ — <code>201</code>, второй —
+        <code>200</code> с тем же <code>id</code>. Это и есть идемпотентность.</p>
+      </section>
+
+      <section class="section">
+        <h2>Тестовые суммы</h2>
+        <p>Настоящих платёжных провайдеров в песочнице нет, поэтому терминальный статус
+        задаётся правилом по последним двум цифрам <code>amount_minor</code>
+        (формально: <code>amount_minor % 100</code>). Правило применяется синхронно
+        при создании; если оно сработало, в ответе <code>status_reason:
+        "test_amount_rule"</code>.</p>
+        <div class="table-wrap">
+        <table>
+          <tr><th>amount_minor % 100</th><th>Статус при создании</th><th>status_reason</th></tr>
+          <tr><td><code>1</code> (…01)</td><td><span class="status-pill pill--failed">failed</span></td><td><code>test_amount_rule</code></td></tr>
+          <tr><td><code>2</code> (…02)</td><td><span class="status-pill pill--succeeded">succeeded</span></td><td><code>test_amount_rule</code></td></tr>
+          <tr><td>остальные</td><td><span class="status-pill pill--pending">pending</span></td><td><code>null</code></td></tr>
+        </table>
+        </div>
+        <p style="margin-top: var(--space-3);">Обратите внимание: суммы <code>1</code> и
+        <code>2</code> минорных единицы — тоже триггеры правила (<code>1 % 100 == 1</code>,
+        <code>2 % 100 == 2</code>). Платёж на одну копейку уйдёт в failed — это не поломка,
+        а правило песочницы.</p>
+      </section>
+
+      <!-- Образец оформления секции эндпоинта -->
+      <section class="section">
+        <div class="endpoint-title">
+          <span class="method-badge">POST</span>
+          <span class="path">/v1/payments</span>
+        </div>
+        <h3>Заголовки</h3>
+        <div class="table-wrap">
+        <table>
+          <tr><th>Заголовок</th><th></th><th>Описание</th></tr>
+          <tr><td><code>Idempotency-Key</code></td><td><span class="req">обязателен</span></td>
+              <td>Ключ идемпотентности: непустая строка 1–255 символов. TTL — 24 часа</td></tr>
+          <tr><td><code>X-Merchant-Id</code></td><td><span class="req">обязателен</span></td>
+              <td>Идентификатор мерчанта: 1–64 символа из набора <code>[A-Za-z0-9._-]</code></td></tr>
+        </table>
+        </div>
+        <h3>Ответы</h3>
+        <div class="table-wrap">
+        <table>
+          <tr><td><span class="status-pill pill--201">201</span></td>
+              <td>Платёж создан</td></tr>
+          <tr><td><span class="status-pill pill--200">200</span></td>
+              <td>Повтор: возвращён существующий платёж, тот же <code>id</code></td></tr>
+          <tr><td><span class="status-pill pill--400">400</span></td>
+              <td>Заголовки: <code>idempotency_key_required</code> ·
+                  <code>merchant_id_required</code> · <code>invalid_merchant_id</code></td></tr>
+          <tr><td><span class="status-pill pill--409">409</span></td>
+              <td><code>idempotency_key_reuse</code> · <code>request_in_progress</code></td></tr>
+          <tr><td><span class="status-pill pill--422">422</span></td>
+              <td>Тело: <code>validation_failed</code> — все нарушения разом
+                  в <code>details.errors</code></td></tr>
+        </table>
+        </div>
+        <p class="legend">Образец оформления: остальные три эндпоинта собираются Scalar-ом
+        по этой же схеме — бейдж метода, путь, таблицы заголовков и ответов.</p>
+      </section>
+
+      <section class="section">
+        <h2>Коды ошибок</h2>
+        <p>Формат единый: <code>{"error": {"code", "message", "details"}}</code>.
+        Разделение статусов — по RFC 9110: <strong>400</strong> — проблема заголовков
+        запроса, <strong>422</strong> — тело разобрано, но поля не прошли проверку;
+        вся валидация тела отвечает одним кодом <code>validation_failed</code>,
+        карта «поле → нарушение» со всеми нарушениями разом — в
+        <code>details.errors</code>.</p>
+        <div class="table-wrap">
+        <table>
+          <tr><th>HTTP</th><th>code</th><th>Когда</th></tr>
+          <tr><td><span class="status-pill pill--400">400</span></td><td><code>idempotency_key_required</code></td><td>Создание платежа без заголовка <code>Idempotency-Key</code> (или он пуст)</td></tr>
+          <tr><td><span class="status-pill pill--400">400</span></td><td><code>merchant_id_required</code></td><td>Нет заголовка <code>X-Merchant-Id</code></td></tr>
+          <tr><td><span class="status-pill pill--400">400</span></td><td><code>invalid_merchant_id</code></td><td><code>X-Merchant-Id</code> пуст, длиннее 64 символов или с недопустимыми символами</td></tr>
+          <tr><td><span class="status-pill pill--422">422</span></td><td><code>validation_failed</code></td><td>Поля тела не прошли проверку: <code>amount_minor</code>, <code>currency</code>, <code>order_id</code>, <code>description</code> — все нарушения в <code>details.errors</code></td></tr>
+          <tr><td><span class="status-pill pill--409">409</span></td><td><code>idempotency_key_reuse</code></td><td>Тот же ключ, другое тело</td></tr>
+          <tr><td><span class="status-pill pill--409">409</span></td><td><code>request_in_progress</code></td><td>Запрос с этим ключом ещё выполняется</td></tr>
+          <tr><td><span class="status-pill pill--409">409</span></td><td><code>payment_not_cancelable</code></td><td>Отмена платежа в статусе <code>succeeded</code> или <code>failed</code></td></tr>
+          <tr><td><span class="status-pill pill--404">404</span></td><td><code>payment_not_found</code></td><td>Платёж не существует или принадлежит другому мерчанту — чужой ресурс не раскрывается</td></tr>
+        </table>
+        </div>
+      </section>
+
+      <p class="legend">Макет #10: страница собирается Scalar-ом из
+      <span class="mono">openapi/openapi.yaml</span> (D2) — макет задаёт структуру и токены,
+      не пиксельную копию. Тексты разделов и таблицы — черновик для D3/D4, финальные
+      формулировки живут в контракте.</p>
+
+    </main>
+  </div>
+</div>
+</body>
+</html>

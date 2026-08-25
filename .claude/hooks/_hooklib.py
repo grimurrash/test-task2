@@ -9,11 +9,47 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
 def project_dir():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+def repo_root(cwd=None):
+    """Корень ОСНОВНОЙ копии репозитория — общий для неё и для всех linked
+    worktree (issue #24). `git rev-parse --git-common-dir` возвращает путь
+    к `.git` основной копии независимо от того, откуда его спросили: внутри
+    `.worktrees/<роль>` `.git` — файл-указатель на приватный gitdir, а не
+    папка, и всё, что раньше проверяло «это корень» через `project_dir()`
+    (`CLAUDE_PROJECT_DIR` или `os.getcwd()`), могло получить границей сам
+    worktree — `../сосед` относительно него формально остаётся «внутри».
+
+    В живой сессии `CLAUDE_PROJECT_DIR` эмпирически не меняется при `cd`
+    агента в worktree — проверено отладочным прогоном на двух параллельных
+    ролях сразу. Но полагаться на то, что так будет всегда, — держать границу
+    на допущении о поведении обвязки, а не на факте о репозитории; здесь
+    вместо допущения — прямой вопрос git.
+
+    Сбой (не репозиторий, git не найден, таймаут) — откат к `project_dir()`:
+    без общего корня разговора нет, но и молчать не резон.
+    """
+    base = cwd or project_dir()
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=base, capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return os.path.realpath(base)
+    if proc.returncode != 0:
+        return os.path.realpath(base)
+    common_dir = proc.stdout.strip()
+    if not common_dir:
+        return os.path.realpath(base)
+    if not os.path.isabs(common_dir):
+        common_dir = os.path.join(base, common_dir)
+    return os.path.dirname(os.path.realpath(common_dir))
 
 def read_input():
     try:

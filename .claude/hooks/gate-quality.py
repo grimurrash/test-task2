@@ -7,6 +7,19 @@
 
 Гейт срабатывает один раз на условие: повторный Stop с той же причиной
 в течение десяти минут пропускается, чтобы не зациклить работу.
+
+issue #24, смежная находка: `.git` внутри linked worktree — файл-указатель,
+а не папка, и проверка ниже «это репозиторий» через `os.path.isdir` молча
+проваливалась бы для сессии, работающей в worktree, — отключая гейт целиком,
+а не просто ошибаясь на границе. Проверка ослаблена до `os.path.exists`: она
+здесь ровно как признак «это git-чекаут», не как утверждение о его форме.
+
+Корень **не** сведён к общему с `guard-scope`/`guard-protected-files`
+(`_hooklib.repo_root`) — намеренно: этому хуку нужен каталог, где реально
+шла работа (там же спрашивается `git status` и считаются mtime исходников),
+а не общий с другими копиями. Если бы гейт всегда смотрел на основную копию,
+сессия, работающая в `.worktrees/<роль>`, получила бы проверку чужого
+рабочего дерева — состояние worktree осталось бы вне поля зрения полностью.
 """
 import hashlib
 import json
@@ -52,8 +65,8 @@ def main():
     if data.get("stop_hook_active"):
         sys.exit(0)
 
-    root = os.path.realpath(H.project_dir())
-    if not os.path.isdir(os.path.join(root, ".git")):
+    root = os.path.realpath(data.get("cwd") or H.project_dir())
+    if not os.path.exists(os.path.join(root, ".git")):
         sys.exit(0)
 
     problems = []

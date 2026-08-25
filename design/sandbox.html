@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Макет · Песочница платежей</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ==========================================================================
+   Макет экрана песочницы. Статичная картинка поведения (issue #10).
+   Направление — строгий финтех: чернильная шапка, индиго-акцент,
+   журнал обмена как таймлайн с цветной осью.
+   Все значения — из tokens.css; здесь только раскладка и композиция.
+   Серые метки C1–C7 — аннотации для приёмки, в реализацию не переносятся.
+   ========================================================================== */
+* { box-sizing: border-box; margin: 0; }
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.page { max-width: var(--layout-max-width); margin: 0 auto; padding: var(--space-4); }
+
+/* --- Чернильная шапка ------------------------------------------------------- */
+.topbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
+  background: var(--color-ink);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-raised);
+  color: var(--color-ink-text);
+}
+.brand .overline {
+  font-size: var(--font-size-overline); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wide); text-transform: uppercase;
+  color: var(--color-ink-text-muted);
+}
+.brand h1 {
+  font-size: var(--font-size-h1); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-tight); line-height: var(--line-height-tight);
+  margin-top: var(--space-1);
+}
+.baseurl {
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  color: var(--color-ink-text-muted);
+  background: var(--color-ink-raised); border: 1px solid var(--color-ink-border);
+  padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill);
+}
+.merchant { margin-left: auto; text-align: right; }
+.merchant .label {
+  font-size: var(--font-size-overline); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wide); text-transform: uppercase;
+  color: var(--color-ink-text-muted); margin-bottom: var(--space-2);
+}
+.segmented {
+  display: inline-flex; gap: var(--space-1);
+  background: var(--color-ink-raised); border: 1px solid var(--color-ink-border);
+  border-radius: var(--radius-pill); padding: var(--space-1);
+  font-size: var(--font-size-small); font-family: var(--font-family-mono);
+}
+.segmented span { padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); color: var(--color-ink-text-muted); }
+.segmented .active { background: var(--color-accent); color: var(--color-text-inverse); font-weight: var(--font-weight-semibold); }
+.merchant .hint { font-size: var(--font-size-caption); color: var(--color-ink-text-muted); margin-top: var(--space-2); max-width: 360px; }
+
+/* --- Три колонки ------------------------------------------------------------ */
+.layout {
+  display: grid; gap: var(--space-4); margin-top: var(--space-4);
+  grid-template-columns: var(--column-form) minmax(0, 1fr) var(--column-payments);
+  align-items: start;
+}
+.card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  padding: var(--space-5);
+}
+.card-title {
+  font-size: var(--font-size-overline); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-wide); text-transform: uppercase;
+  color: var(--color-text-faint); margin-bottom: var(--space-4);
+}
+.card-title strong {
+  display: block; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-tight); text-transform: none;
+  color: var(--color-text); margin-top: var(--space-1);
+}
+
+/* --- Форма (U1) -------------------------------------------------------------- */
+.field { margin-bottom: var(--space-4); }
+.field label { display: block; font-size: var(--font-size-small); font-weight: var(--font-weight-medium); margin-bottom: var(--space-1); }
+.field .sub { font-size: var(--font-size-caption); color: var(--color-text-muted); margin-top: var(--space-1); }
+.control {
+  width: 100%; font: inherit; color: var(--color-text);
+  background: var(--input-bg); border: 1px solid var(--input-border);
+  border-radius: var(--radius-small);
+  padding: var(--input-padding-y) var(--input-padding-x);
+}
+.control:focus, .control--focus { outline: none; border-color: var(--input-border-focus); box-shadow: var(--focus-ring); }
+/* select — в общий вид полей: без нативной стрелки и системной рамки.
+   Цвет стрелки зашит в data-URI литералом (%235b6472 = --color-text-muted):
+   var() внутри url() не работает — при смене палитры менять вместе с токеном. */
+select.control {
+  appearance: none; -webkit-appearance: none;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><path d="M1 1.5l5 5 5-5" fill="none" stroke="%235b6472" stroke-width="1.8" stroke-linecap="round"/></svg>');
+  background-repeat: no-repeat; background-position: right var(--space-3) center;
+  padding-right: var(--space-8);
+}
+.control--error { border-color: var(--input-border-error); background: var(--input-bg-error); }
+.field .error-text { font-size: var(--font-size-caption); color: var(--color-error); margin-top: var(--space-1); }
+.mono { font-family: var(--font-family-mono); }
+/* Ключ и кнопка генерации — двумя строками: UUID виден целиком, не обрезается */
+.keyrow .control { min-width: 0; font-size: var(--font-size-caption); }
+.keyrow .btn { display: block; width: 100%; margin-top: var(--space-2); }
+.counter { text-align: right; font-size: var(--font-size-caption); color: var(--color-text-faint); margin-top: var(--space-1); }
+
+.btn {
+  display: inline-block; font: inherit; font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-small); cursor: pointer;
+  padding: var(--button-padding-y) var(--button-padding-x);
+  border: 1px solid transparent;
+}
+.btn--primary { background: var(--button-primary-bg); color: var(--button-primary-text); box-shadow: var(--shadow-card); }
+.btn--secondary { background: var(--button-secondary-bg); color: var(--button-secondary-text); border-color: var(--button-secondary-border); }
+.btn--block { display: block; width: 100%; text-align: center; }
+.btn + .btn--block { margin-top: var(--space-2); }
+.actions { margin-top: var(--space-5); }
+.actions .sub { font-size: var(--font-size-caption); color: var(--color-text-muted); margin-top: var(--space-2); text-align: center; }
+
+/* Сценарии (U4): название + чип ожидаемого кода */
+.scenarios { margin-top: var(--space-6); border-top: 1px solid var(--color-border); padding-top: var(--space-4); }
+.scenario {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; text-align: left; font: inherit; cursor: pointer;
+  background: var(--button-ghost-bg); color: var(--button-ghost-text);
+  border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  padding: var(--space-2) var(--space-3); margin-bottom: var(--space-2);
+}
+.scenario .name { flex: 1; min-width: 0; }
+.scenario .name small { display: block; color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.expect {
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  padding: 1px var(--space-2); border-radius: var(--radius-pill); white-space: nowrap;
+}
+.expect--200 { color: var(--color-repeat); background: var(--color-repeat-bg); }
+.expect--201 { color: var(--color-created); background: var(--color-created-bg); }
+.expect--409 { color: var(--color-conflict); background: var(--color-conflict-bg); }
+
+/* --- Журнал обмена (U3): таймлайн ------------------------------------------- */
+.timeline { position: relative; padding-left: var(--space-5); }
+.timeline::before {
+  content: ""; position: absolute; left: 4px; top: var(--space-2); bottom: var(--space-2);
+  width: 2px; background: var(--timeline-rail); border-radius: 1px;
+}
+.entry {
+  position: relative; border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  padding: var(--space-3); margin-bottom: var(--space-3);
+  background: var(--color-surface);
+}
+/* Точка на оси — только у записей верхнего уровня; записи внутри .group
+   делят одну точку группы, своей не получают (селектор прямого потомка). */
+.timeline > .entry::before {
+  content: ""; position: absolute;
+  left: calc(-1 * var(--space-5) - var(--timeline-dot-size) / 2 + 5px);
+  top: var(--space-4);
+  width: var(--timeline-dot-size); height: var(--timeline-dot-size);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--color-surface);
+}
+.entry--created::before { background: var(--color-created); }
+.entry--repeat::before { background: var(--color-repeat); }
+.entry--conflict::before { background: var(--color-conflict); }
+.entry--error::before { background: var(--color-error); }
+.entry--network::before { background: var(--color-network); }
+.entry--network { border-style: dashed; background: var(--color-network-bg); }
+
+.entry-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--font-size-small); }
+.entry-head time { color: var(--color-text-faint); font-variant-numeric: tabular-nums; font-size: var(--font-size-caption); }
+.entry-head .method { font-family: var(--font-family-mono); font-weight: var(--font-weight-semibold); }
+.entry-head .path { font-family: var(--font-family-mono); color: var(--color-text-muted); overflow-wrap: anywhere; }
+
+.code-badge {
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  padding: 2px var(--space-2); border-radius: var(--radius-pill);
+  margin-left: auto;
+}
+.code-badge--201 { color: var(--color-created); background: var(--color-created-bg); }
+.code-badge--200 { color: var(--color-repeat); background: var(--color-repeat-bg); }
+.code-badge--409 { color: var(--color-conflict); background: var(--color-conflict-bg); }
+.code-badge--422 { color: var(--color-error); background: var(--color-error-bg); }
+.code-badge--none { color: var(--color-network); background: var(--color-surface); border: 1px dashed var(--color-network-border); }
+
+.verdict {
+  display: inline-block; font-size: var(--font-size-small); font-weight: var(--font-weight-semibold);
+  padding: 2px var(--space-3); border-radius: var(--radius-pill);
+  border: 1px solid;
+}
+.verdict--new { color: var(--color-created); background: var(--color-created-bg); border-color: var(--color-created-border); }
+.verdict--same { color: var(--color-repeat); background: var(--color-repeat-bg); border-color: var(--color-repeat-border); }
+
+.entry-body { margin-top: var(--space-2); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--font-size-small); }
+.entry .note { margin-top: var(--space-2); font-size: var(--font-size-caption); color: var(--color-text-muted); }
+
+.chip {
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  background: var(--color-surface-sunken); border: 1px solid var(--color-border);
+  border-radius: var(--radius-small); padding: 1px var(--space-2);
+  overflow-wrap: anywhere;
+}
+/* Идентичность ключа: одинаковый ключ — одинаковая точка. В реализации
+   оттенок выводится из значения ключа (hash → hue); в макете два образца. */
+.chip--key::before { content: "●"; margin-right: var(--space-1); }
+.key-a::before { color: #7b5cd6; }
+.key-b::before { color: #0e8a7d; }
+.chip--errcode { color: var(--color-conflict); background: var(--color-conflict-bg); border-color: var(--color-conflict-border); }
+.chip--errcode-422 { color: var(--color-error); background: var(--color-error-bg); border-color: var(--color-error-border); }
+
+.payload {
+  margin-top: var(--space-3); padding: var(--space-3);
+  background: var(--color-ink); color: var(--color-code-text);
+  border-radius: var(--radius-small);
+  font-family: var(--font-family-mono); font-size: var(--font-size-caption);
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7;
+}
+.payload em { font-style: normal; color: var(--color-code-highlight); background: var(--color-code-highlight-bg); border-radius: 2px; }
+
+.group {
+  position: relative;
+  border: 1px dashed var(--color-border-strong); border-radius: var(--radius-small);
+  padding: var(--space-3); margin-bottom: var(--space-3);
+  background: color-mix(in srgb, var(--color-surface-sunken) 45%, var(--color-surface));
+}
+.group-label {
+  font-size: var(--font-size-caption); font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted); margin-bottom: var(--space-3);
+}
+.group .entry:last-child { margin-bottom: 0; }
+.group::before {
+  content: ""; position: absolute;
+  left: calc(-1 * var(--space-5) - var(--timeline-dot-size) / 2 + 5px);
+  top: var(--space-4);
+  width: var(--timeline-dot-size); height: var(--timeline-dot-size);
+  border-radius: 50%; background: var(--color-conflict);
+  box-shadow: 0 0 0 3px var(--color-bg);
+}
+.group--repeat::before { background: var(--color-repeat); }
+
+.marker {
+  position: absolute; top: calc(-1 * var(--space-2)); right: var(--space-2);
+  font-size: var(--font-size-caption); color: var(--color-text-faint);
+  background: var(--color-bg); border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-pill); padding: 0 var(--space-2);
+}
+
+/* --- Список платежей (U5) ----------------------------------------------------- */
+.payments-count { font-size: var(--font-size-caption); color: var(--color-text-muted); margin: calc(-1 * var(--space-2)) 0 var(--space-3); }
+.payment {
+  border: 1px solid var(--color-border); border-radius: var(--radius-small);
+  padding: var(--space-3); margin-bottom: var(--space-2);
+}
+.payment-head { display: flex; align-items: baseline; gap: var(--space-2); }
+.payment-head .amount { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
+.payment-head .minor { font-size: var(--font-size-caption); color: var(--color-text-faint); }
+.status {
+  margin-left: auto; font-size: var(--font-size-caption); font-weight: var(--font-weight-medium);
+  padding: 1px var(--space-2); border-radius: var(--radius-pill);
+}
+.status--pending   { color: var(--color-status-pending);   background: var(--color-status-pending-bg); }
+.status--succeeded { color: var(--color-status-succeeded); background: var(--color-status-succeeded-bg); }
+.status--failed    { color: var(--color-status-failed);    background: var(--color-status-failed-bg); }
+.status--canceled  { color: var(--color-status-canceled);  background: var(--color-status-canceled-bg); }
+.payment .meta { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.payment .desc {
+  margin-top: var(--space-2); font-size: var(--font-size-small); color: var(--color-text);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.payment .desc-note { font-size: var(--font-size-caption); color: var(--color-text-faint); margin-top: var(--space-1); }
+
+/* --- Легенда макета ----------------------------------------------------------- */
+.legend {
+  margin-top: var(--space-4); font-size: var(--font-size-caption);
+  color: var(--color-text-faint); border-top: 1px dashed var(--color-border-strong);
+  padding-top: var(--space-2);
+}
+
+/* --- Узкий экран: колонки складываются в столбец ------------------------------ */
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .layout > * { min-width: 0; }
+  .merchant { margin-left: 0; text-align: left; }
+  .code-badge { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Шапка: название, base URL, переключатель мерчанта (U4a) -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="overline">Идемпотентный платёжный сервис</div>
+      <h1>Песочница платежей</h1>
+    </div>
+    <span class="baseurl">http://localhost:8080</span>
+    <div class="merchant">
+      <div class="label">Мерчант · X-Merchant-Id</div>
+      <div class="segmented" role="group" aria-label="X-Merchant-Id">
+        <span class="active">demo-shop-a</span><span>demo-shop-b</span>
+      </div>
+      <p class="hint">Ключ идемпотентности живёт внутри мерчанта: переключите и отправьте
+      с тем же ключом — создастся новый платёж (F6).</p>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- ЛЕВАЯ КОЛОНКА: форма (U1), кнопки (U2), сценарии (U4) -->
+    <section class="card" aria-label="Форма запроса">
+      <div class="card-title">Запрос<strong class="mono">POST /v1/payments</strong></div>
+
+      <div class="field">
+        <label for="amount">Сумма, минорные единицы (amount_minor)</label>
+        <input class="control control--error mono" id="amount" value="0">
+        <p class="error-text">Целое число больше нуля. Ответ сервера — 422 validation_failed, запись C6 в журнале.</p>
+        <p class="sub">Тестовые суммы: копейки <span class="mono">01</span> → failed,
+        <span class="mono">02</span> → succeeded, прочее → pending.</p>
+      </div>
+
+      <div class="field">
+        <label for="currency">Валюта</label>
+        <select class="control" id="currency">
+          <option selected>RUB</option><option>USD</option><option>EUR</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="order">order_id</label>
+        <input class="control mono" id="order" value="ORD-1045">
+      </div>
+
+      <div class="field">
+        <label for="desc">Описание (description)</label>
+        <textarea class="control" id="desc" rows="2">Подписка PRO, август</textarea>
+        <div class="counter">20 / 512</div>
+      </div>
+
+      <div class="field">
+        <label for="key">Idempotency-Key</label>
+        <div class="keyrow">
+          <input class="control mono" id="key" value="3f9c1b8e-5a02-4d67-9c11-8de402aa71f5">
+          <button class="btn btn--secondary" type="button">Сгенерировать</button>
+        </div>
+        <p class="sub">Ключ живёт 24 часа (TTL). Повтор с тем же ключом и тем же телом
+        вернёт тот же платёж, а не создаст новый.</p>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn--primary btn--block" type="button">Отправить</button>
+        <button class="btn btn--secondary btn--block" type="button">Отправить ещё раз тот же запрос</button>
+        <p class="sub">Повторяет предыдущий запрос дословно — тело и ключ без изменений (U2).</p>
+      </div>
+
+      <div class="scenarios">
+        <div class="card-title">Готовые сценарии</div>
+        <button class="scenario" type="button">
+          <span class="name">Повтор с тем же телом<small>тот же платёж, тот же id</small></span>
+          <span class="expect expect--200">200</span>
+        </button>
+        <button class="scenario" type="button">
+          <span class="name">Тот же ключ, другое тело<small>idempotency_key_reuse</small></span>
+          <span class="expect expect--409">409</span>
+        </button>
+        <button class="scenario" type="button">
+          <span class="name">Две одновременные отправки<small>ровно один платёж</small></span>
+          <span class="expect expect--201">201</span><span class="expect expect--409">200/409</span>
+        </button>
+        <button class="scenario" type="button">
+          <span class="name">Двойная отмена<small>отмена идемпотентна</small></span>
+          <span class="expect expect--200">200</span>
+        </button>
+        <button class="scenario" type="button">
+          <span class="name">Отменить завершённый платёж<small>сумма …02, payment_not_cancelable</small></span>
+          <span class="expect expect--409">409</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ЦЕНТР: журнал обмена (U3). Новые записи сверху, ось — таймлайн. -->
+    <section class="card" aria-label="Журнал обмена">
+      <div class="card-title">Журнал обмена</div>
+      <div class="timeline">
+
+      <!-- C6 · 422 валидация тела (контракт #9: вся валидация тела — validation_failed) -->
+      <article class="entry entry--error">
+        <span class="marker">C6</span>
+        <div class="entry-head">
+          <time>14:07:52</time><span class="method">POST</span><span class="path">/v1/payments</span>
+          <span class="code-badge code-badge--422">422</span>
+        </div>
+        <div class="entry-body">
+          <span class="chip chip--errcode-422">validation_failed</span>
+          <span>amount_minor — целое строго больше нуля.</span>
+        </div>
+        <p class="note">Все нарушения приходят разом в details.errors («поле → нарушение»);
+        поле «Сумма» в форме — в состоянии ошибки с тем же текстом.</p>
+      </article>
+
+      <!-- C7 · ошибка сети -->
+      <article class="entry entry--network">
+        <span class="marker">C7</span>
+        <div class="entry-head">
+          <time>14:07:31</time><span class="method">POST</span><span class="path">/v1/payments</span>
+          <span class="code-badge code-badge--none">нет ответа</span>
+        </div>
+        <div class="entry-body">
+          <span class="chip chip--key key-a">3f9c1b8e…71f5</span>
+          <span>Сеть оборвалась, ответ не получен.</span>
+        </div>
+        <p class="note">Безопасно повторить с тем же ключом: если платёж успел создаться,
+        придёт 200 и тот же id — второго списания не будет.</p>
+      </article>
+
+      <!-- C5 · 409 отмена завершённого -->
+      <article class="entry entry--conflict">
+        <span class="marker">C5</span>
+        <div class="entry-head">
+          <time>14:06:48</time><span class="method">POST</span><span class="path">/v1/payments/pay_9d31f6/cancel</span>
+          <span class="code-badge code-badge--409">409</span>
+        </div>
+        <div class="entry-body">
+          <span class="chip chip--errcode">payment_not_cancelable</span>
+          <span>Платёж уже завершён (succeeded) — отмена невозможна.</span>
+        </div>
+        <p class="note">Сценарий «отменить завершённый платёж»: сумма 120,02 — копейки
+        <span class="mono">02</span> перевели платёж в succeeded при создании.</p>
+      </article>
+
+      <!-- Сценарий: двойная отмена (U4) — не из семи состояний, показывает идемпотентность отмены -->
+      <div class="group group--repeat">
+        <div class="group-label">Сценарий «двойная отмена» · pay_7ac2e9</div>
+        <article class="entry entry--repeat">
+          <div class="entry-head">
+            <time>14:05:59</time><span class="method">POST</span><span class="path">/v1/payments/pay_7ac2e9/cancel</span>
+            <span class="code-badge code-badge--200">200</span>
+          </div>
+          <div class="entry-body"><span>Повтор отмены — тот же результат: canceled. Отмена идемпотентна.</span></div>
+        </article>
+        <article class="entry entry--repeat">
+          <div class="entry-head">
+            <time>14:05:55</time><span class="method">POST</span><span class="path">/v1/payments/pay_7ac2e9/cancel</span>
+            <span class="code-badge code-badge--200">200</span>
+          </div>
+          <div class="entry-body"><span>Платёж отменён: pending → canceled.</span></div>
+        </article>
+      </div>
+
+      <!-- C4 · гонка: пара записей одного сценария -->
+      <div class="group">
+        <div class="group-label">Сценарий «две одновременные отправки» · один ключ
+          <span class="chip chip--key key-b">77b1a0d3…9c4e</span> → ровно один платёж</div>
+        <article class="entry entry--conflict">
+          <span class="marker">C4</span>
+          <div class="entry-head">
+            <time>14:04:20</time><span class="method">POST</span><span class="path">/v1/payments</span>
+            <span class="code-badge code-badge--409">409</span>
+          </div>
+          <div class="entry-body">
+            <span class="chip chip--errcode">request_in_progress</span>
+            <span>Запрос с этим ключом уже в полёте. Второй платёж не создан.</span>
+          </div>
+          <p class="note">По контракту проигравший может получить и 200 с тем же платежом —
+          здесь показан исход с 409; второго id не бывает ни в одном из них.</p>
+        </article>
+        <article class="entry entry--created">
+          <div class="entry-head">
+            <time>14:04:20</time><span class="method">POST</span><span class="path">/v1/payments</span>
+            <span class="code-badge code-badge--201">201</span>
+          </div>
+          <div class="entry-body">
+            <span class="verdict verdict--new">новый платёж</span>
+            <span class="chip">pay_7ac2e9</span>
+            <span class="chip chip--key key-b">77b1a0d3…9c4e</span>
+          </div>
+        </article>
+      </div>
+
+      <!-- C3 · 409 конфликт тела -->
+      <article class="entry entry--conflict">
+        <span class="marker">C3</span>
+        <div class="entry-head">
+          <time>14:03:37</time><span class="method">POST</span><span class="path">/v1/payments</span>
+          <span class="code-badge code-badge--409">409</span>
+        </div>
+        <div class="entry-body">
+          <span class="chip chip--errcode">idempotency_key_reuse</span>
+          <span class="chip chip--key key-a">a1d4c2f0…9f02</span>
+          <span>Тот же ключ, но другое тело (сумма изменена).</span>
+        </div>
+        <p class="note">Существующий платёж pay_51e8b4 не изменён — списания не задвоятся
+        и не перезапишутся.</p>
+      </article>
+
+      <!-- C2 · 200 повтор, запись развёрнута -->
+      <article class="entry entry--repeat">
+        <span class="marker">C2</span>
+        <div class="entry-head">
+          <time>14:02:19</time><span class="method">POST</span><span class="path">/v1/payments</span>
+          <span class="code-badge code-badge--200">200</span>
+        </div>
+        <div class="entry-body">
+          <span class="verdict verdict--same">тот же платёж</span>
+          <span class="chip">pay_51e8b4</span>
+          <span class="chip chip--key key-a">a1d4c2f0…9f02</span>
+        </div>
+<div class="payload">{
+  "id": <em>"pay_51e8b4"</em>,
+  "status": "pending",
+  "status_reason": null,
+  "amount_minor": 149000,
+  "currency": "RUB",
+  "order_id": "ORD-1042",
+  "description": "Подписка PRO, август",
+  "created_at": <em>"2026-08-25T14:02:11Z"</em>
+}</div>
+        <p class="note">Ответ повторён байт-в-байт: тот же <span class="mono">id</span>
+        и тот же <span class="mono">created_at</span>, что в записи 201 ниже. Второй платёж не создан.</p>
+      </article>
+
+      <!-- C1 · 201 создан -->
+      <article class="entry entry--created">
+        <span class="marker">C1</span>
+        <div class="entry-head">
+          <time>14:02:11</time><span class="method">POST</span><span class="path">/v1/payments</span>
+          <span class="code-badge code-badge--201">201</span>
+        </div>
+        <div class="entry-body">
+          <span class="verdict verdict--new">новый платёж</span>
+          <span class="chip">pay_51e8b4</span>
+          <span class="chip chip--key key-a">a1d4c2f0…9f02</span>
+        </div>
+      </article>
+
+      </div>
+      <p class="legend">Метки C1–C7 — аннотации макета для приёмки #10
+      (семь состояний ответа, карта — design/README.md). В реализацию не переносятся.</p>
+    </section>
+
+    <!-- ПРАВАЯ КОЛОНКА: список платежей (U5) -->
+    <aside class="card" aria-label="Платежи">
+      <div class="card-title">Платежи<strong>demo-shop-a · 4</strong></div>
+      <p class="payments-count">Повторы и конфликты список не увеличивают.</p>
+
+      <article class="payment">
+        <div class="payment-head">
+          <span class="amount">120,02 RUB</span><span class="minor mono">12002</span>
+          <span class="status status--succeeded">succeeded</span>
+        </div>
+        <div class="meta">
+          <span class="chip">pay_9d31f6</span><span class="mono">ORD-1044</span>
+          <span class="chip">status_reason: test_amount_rule</span>
+        </div>
+        <p class="desc">Продление тарифа «Старт» на один месяц с переносом неиспользованных
+        лимитов прошлого периода, промокод SUMMER-26 применён при оформлении заказа
+        в мобильном приложении; чек отправлен на почту клиента, дубль чека — в личный
+        кабинет. Оплата прошла через демонстрационный шлюз песочницы.</p>
+        <p class="desc-note">Длинный description (до 512 символов): обрезан по трём строкам,
+        полный текст — при раскрытии карточки.</p>
+      </article>
+
+      <article class="payment">
+        <div class="payment-head">
+          <span class="amount">250,00 USD</span><span class="minor mono">25000</span>
+          <span class="status status--canceled">canceled</span>
+        </div>
+        <div class="meta"><span class="chip">pay_7ac2e9</span><span class="mono">ORD-1043</span></div>
+        <p class="desc">Разовая консультация</p>
+        <p class="desc-note">Из двух одновременных отправок создался один платёж; затем отменён.</p>
+      </article>
+
+      <article class="payment">
+        <div class="payment-head">
+          <span class="amount">1 490,00 RUB</span><span class="minor mono">149000</span>
+          <span class="status status--pending">pending</span>
+        </div>
+        <div class="meta"><span class="chip">pay_51e8b4</span><span class="mono">ORD-1042</span></div>
+        <p class="desc">Подписка PRO, август</p>
+      </article>
+
+      <article class="payment">
+        <div class="payment-head">
+          <span class="amount">99,01 EUR</span><span class="minor mono">9901</span>
+          <span class="status status--failed">failed</span>
+        </div>
+        <div class="meta">
+          <span class="chip">pay_c5b0d8</span><span class="mono">ORD-1041</span>
+          <span class="chip">status_reason: test_amount_rule</span>
+        </div>
+        <p class="desc">Срочно! &lt;b&gt;ускорить&lt;/b&gt;&lt;script&gt;alert("xss")&lt;/script&gt;</p>
+        <p class="desc-note">description — недоверенный текст: разметка и скрипты выводятся
+        буквально и не исполняются (U6).</p>
+      </article>
+    </aside>
+
+  </div>
+</div>
+</body>
+</html>

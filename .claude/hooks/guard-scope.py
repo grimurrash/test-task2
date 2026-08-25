@@ -12,6 +12,13 @@
 
 Полной гарантии регулярки не дают и дать не могут — граница уровня ОС остаётся
 задачей песочницы. Что именно остаётся дырой, записано в docs/HOOKS.md.
+
+issue #24: корнем считался `CLAUDE_PROJECT_DIR`/`os.getcwd()` — то, что там
+лежит, зависит от обвязки, а не является фактом о репозитории. Внутри linked
+worktree (`.worktrees/<роль>`) это могло оказаться самим worktree, и `../сосед`
+относительно него формально не выходил за такую границу. Теперь граница —
+общий корень от `git rev-parse --git-common-dir` (`_hooklib.repo_root`),
+он один и тот же и для основной копии, и для любого её worktree.
 """
 import os
 import re
@@ -43,7 +50,7 @@ def refuse(kind, path, root, extra=""):
 def main():
     data = H.read_input()
     tool = data.get("tool_name", "")
-    root = os.path.realpath(H.project_dir())
+    root = H.repo_root(data.get("cwd"))
 
     if tool in WRITE_TOOLS:
         for path in H.targets(data):
