@@ -21,6 +21,41 @@ except ImportError:  # POSIX-only механизм; проект и так де�
 def project_dir():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
+STATE_DIR_ENV = "CLAUDE_HOOK_STATE_DIR"
+
+def state_base(default=None):
+    """Корень, от которого считаются СОБСТВЕННЫЕ файлы хуков: выданные
+    пропуски, отметки о прогонах, журналы (issue #54).
+
+    Отделён от project_dir() намеренно. `project_dir()` — это то, что хук
+    ПРОВЕРЯЕТ: от него считается граница «внутри/снаружи» и список защищённых
+    путей. Здесь — то, куда хук ПИШЕТ. Пока это одно и то же место, разница
+    незаметна; она нужна там, где механику пропусков надо проверить, не трогая
+    боевые пропуска.
+
+    Прежде набор тестов решал ту же задачу иначе: удалял боевой unlock.json
+    на время прогона и возвращал снимком. Из-за этого задача и заведена —
+    пока идут тесты, действующего пропуска не существует ни для кого, а пропуск,
+    выданный во время прогона, затирается восстановлением. Снимок аккуратнее
+    гонку не убирает, только сужает окно; убирает перенаправление.
+
+    Переменную задаёт тот, кто запускает хук. Сессии агента она недоступна:
+    хук запускается обвязкой, а не Bash-инструментом, и окружение команды агента
+    в него не наследуется. Полагаться на это одно было бы рассуждением, поэтому
+    команда, пытающаяся её задать, отклоняется guard-protected-files — там же,
+    где запрещена выдача пропуска себе: переменная, указывающая, где лежит
+    unlock.json, указывает, откуда читаются разрешения.
+    """
+    return os.environ.get(STATE_DIR_ENV) or default or project_dir()
+
+def state_path(name, base=None):
+    """Путь к собственному файлу состояния хуков (.claude/state/<name>)."""
+    return os.path.join(state_base(base), ".claude", "state", name)
+
+def log_path(name, base=None):
+    """Путь к собственному журналу хуков (.claude/logs/<name>)."""
+    return os.path.join(state_base(base), ".claude", "logs", name)
+
 def update_json_state(path, mutate):
     """Читает JSON-состояние (или {} при отсутствии/повреждении), даёт
     mutate(dict) изменить его на месте и пишет обратно под эксклюзивной
@@ -112,7 +147,7 @@ def read_input():
         return {}
 
 def log(event, payload):
-    path = os.path.join(project_dir(), ".claude", "logs", "guard.jsonl")
+    path = log_path("guard.jsonl")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event}
@@ -141,8 +176,6 @@ def allowlist():
 def allowed(text):
     return any(rx.search(text) for rx in allowlist())
 
-UNLOCK_PATH = (".claude", "state", "unlock.json")
-
 def unlock_active(zone):
     """Действующий пропуск для зоны или None.
 
@@ -152,7 +185,7 @@ def unlock_active(zone):
     Поэтому подтверждение здесь не спрашивается, а выдаётся заранее и с истечением:
     сэр открывает зону командой scripts/unlock.sh, хук её видит.
     """
-    path = os.path.join(project_dir(), *UNLOCK_PATH)
+    path = state_path("unlock.json")
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)

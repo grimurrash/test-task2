@@ -140,6 +140,19 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "cat .claude/settings.json"}}, "allow"),
     ("guard-protected-files.py", "прогон тестов не считается правкой",
      {"tool_name": "Bash", "tool_input": {"command": "python3 scripts/test_hooks.py"}}, "allow"),
+
+    # --- issue #54: перенаправление состояния — это и есть выдача пропуска ---
+    # Пара к сужению: набор получил право уводить состояние к себе, значит
+    # сессия агента этого права получить не должна. Переменная, указывающая,
+    # где лежит unlock.json, указывает, откуда читаются разрешения.
+    ("guard-protected-files.py", "подмена каталога состояния хукам",
+     {"tool_name": "Bash", "tool_input": {"command": "CLAUDE_HOOK_STATE_DIR=/tmp/своё python3 -c \"print(1)\""}}, "deny"),
+    ("guard-protected-files.py", "экспорт каталога состояния ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "export CLAUDE_HOOK_STATE_DIR=/tmp/своё"}}, "deny"),
+    ("guard-protected-files.py", "подмена после разделителя ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "cd /tmp && env CLAUDE_HOOK_STATE_DIR=/tmp/своё git status"}}, "deny"),
+    ("guard-protected-files.py", "упоминание переменной состояния — не задание",
+     {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'состояние уводится через CLAUDE_HOOK_STATE_DIR=путь'"}}, "allow"),
 ]
 
 INJECTION_CASE = {
