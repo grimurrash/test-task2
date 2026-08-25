@@ -149,8 +149,22 @@ function checkDescription(value: unknown, errors: Record<string, string>): void 
 
 const KNOWN_FIELDS = new Set(['amount_minor', 'currency', 'order_id', 'description']);
 
+/**
+ * Карта нарушений создаётся **без прототипа**.
+ *
+ * Ключи сюда приходят из тела запроса, то есть от недоверенной стороны.
+ * У обычного объекта `errors['__proto__'] = '...'` не создаёт своего поля,
+ * а уходит в сеттер прототипа — нарушение теряется молча, и поле сверх схемы
+ * проезжает в ответ 201 вместо 422. Находка ревью #47; свойство контракта
+ * («лишние поля отвергаются») держалось на том, что никто не назовёт поле
+ * служебным именем.
+ */
+function emptyErrors(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
+}
+
 export function validateCreateBody(body: Record<string, unknown>): CreateCommand {
-  const errors: Record<string, string> = {};
+  const errors = emptyErrors();
 
   checkAmount(body['amount_minor'], errors);
   checkCurrency(body['currency'], errors);

@@ -245,6 +245,20 @@ describe('F4 · гонка — главный дефект темы', () => {
     assert.equal(list.payments[0]?.id, asPayment(winner.response.body).id);
   });
 
+  /**
+   * ПРОВЕРЯЕТ ПОВЕДЕНИЕ ПОД РЕАЛЬНЫМ ТАЙМИНГОМ, РЕАЛИЗАЦИЮ НЕ РАЗЛИЧАЕТ.
+   *
+   * Спор об этом тесте решён измерением в ревью #47: наивная схема
+   * «проверил — записал» даёт здесь 0 красных из 25, тогда как барьерные
+   * тесты рядом краснеют в каждом прогоне из двадцати пяти. Причина измерена,
+   * а не предположена: пик одновременных фиксаций равен единице — десять
+   * запросов не пересекаются вовсе, потому что уступка через `setImmediate`
+   * слишком коротка. С `setTimeout(5)` та же схема даёт десять создателей
+   * и десять `id`, то есть исход задаёт длительность уступки, а не бронь ключа.
+   *
+   * Тест оставлен намеренно: свойство на живом тайминге он проверяет. Но за
+   * охрану его держать нельзя — охрана рядом, в тестах с барьером.
+   */
   it('десять одновременных отправок порождают ровно один платёж', async () => {
     const app = await startApp({ commit: yieldingCommit() });
     const key = cryptoKey();
@@ -306,6 +320,112 @@ describe('F4 · гонка — главный дефект темы', () => {
     const second = await app.create(body, { key });
     assert.equal(second.status, 200);
     assert.equal(asPayment(second.body).id, created.id);
+  });
+});
+
+/**
+ * Инварианты, которые до ревью #47 держались на дисциплине автора, а не
+ * на устройстве кода: мутации по ним давали 175 зелёных. Каждый из трёх
+ * проверен мутацией отдельно — без него краснеет ровно этот набор.
+ */
+describe('Инварианты брони ключа', () => {
+  it('сорвавшаяся фиксация освобождает ключ, а не держит его вечно', async () => {
+    let failing = true;
+    const app = await startApp({
+      commit: () => {
+        if (failing) throw new Error('фиксация сорвалась');
+      },
+    });
+    const key = cryptoKey();
+    const body = validBody();
+
+    // Ответ 500 контрактом не описан, поэтому мимо проверки соответствия.
+    const failed = await app.raw('POST', '/v1/payments', {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Merchant-Id': MERCHANT,
+        'Idempotency-Key': key,
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(failed.status, 500);
+
+    failing = false;
+    const retry = await app.create(body, { key });
+    assert.equal(
+      retry.status,
+      201,
+      'сорвавшееся создание не имеет права держать ключ занятым: повторять клиенту нечего',
+    );
+
+    const list = (await app.list()).body as { payments: unknown[] };
+    assert.equal(list.payments.length, 1);
+  });
+
+  it('освобождение не снимает чужую бронь, поставленную после истечения TTL', async () => {
+    const clock = testClock();
+    const gate = barrier();
+    let calls = 0;
+    const app = await startApp({
+      clock,
+      commit: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await gate.wait();
+          throw new Error('первая фиксация сорвалась');
+        }
+      },
+    });
+    const key = cryptoKey();
+    const body = validBody();
+
+    // A уходит в фиксацию и застревает там.
+    const first = app.raw('POST', '/v1/payments', {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Merchant-Id': MERCHANT,
+        'Idempotency-Key': key,
+      },
+      body: JSON.stringify(body),
+    });
+    await gate.entered;
+
+    // Ключ истекает, пока A ещё в полёте, и B занимает его заново.
+    clock.advance(DAY_MS + 1);
+    const second = await app.create(body, { key });
+    assert.equal(second.status, 201);
+
+    // A срывается и снимает СВОЮ бронь. Чужую трогать не имеет права.
+    gate.release();
+    assert.equal((await first).status, 500);
+
+    const replay = await app.create(body, { key });
+    assert.equal(replay.status, 200, 'бронь B пережила освобождение брони A');
+    assert.equal(asPayment(replay.body).id, asPayment(second.body).id);
+  });
+
+  it('другое тело при первом в полёте → конфликт ключа, а не гонка', async () => {
+    // Порядок внутри reserve: конфликт тела разбирается раньше состояния
+    // «в полёте». Он окончателен, повтор позже его не исправит, тогда как
+    // request_in_progress — приглашение повторить. Перепутать их значит
+    // позвать клиента повторять запрос, который никогда не пройдёт.
+    const gate = barrier();
+    const app = await startApp({ commit: () => gate.wait() });
+    const key = cryptoKey();
+
+    const first = app.create(validBody(), { key });
+    await gate.entered;
+
+    const conflict = await withTimeout(
+      app.create(validBody({ amount_minor: 999 }), { key }),
+      2000,
+      'запрос с другим телом ушёл в фиксацию вместо отказа',
+    );
+    assert.equal(conflict.status, 409);
+    assert.equal(asError(conflict.body).error.code, 'idempotency_key_reuse');
+
+    gate.release();
+    assert.equal((await first).status, 201);
   });
 });
 

@@ -234,6 +234,24 @@ describe('Лишние поля в теле', () => {
     assert.ok(errors['второе']);
   });
 
+  // Находка ревью #47: карта нарушений строилась обычным объектом, и запись
+  // errors['__proto__'] уходила в сеттер прототипа — нарушение терялось молча,
+  // ответ становился 201. Свойство «лишние поля отвергаются» держалось на том,
+  // что никто не назовёт поле служебным именем.
+  for (const name of ['__proto__', 'constructor', 'prototype', 'toString']) {
+    it(`служебное имя не проскакивает мимо проверки: ${name}`, async () => {
+      const app = await startApp();
+      const res = await app.create(undefined, {
+        key: cryptoKey(),
+        rawBody: `{"amount_minor":125000,"currency":"RUB","order_id":"o-1","${name}":{"x":1}}`,
+      });
+
+      assert.equal(res.status, 422);
+      assert.equal(asError(res.body).error.code, 'validation_failed');
+      assert.ok(fieldErrors(res.body)[name], `нарушение по полю ${name} обязано быть названо`);
+    });
+  }
+
   it('лишнее поле не мешает назвать нарушения известных полей', async () => {
     const app = await startApp();
     const res = await app.create(validBody({ amount_minor: 0, extra: true }));
@@ -306,6 +324,31 @@ describe('Тело, которое нечем разобрать → 400 malform
 
     assert.equal(res.status, 400);
     assert.notEqual(asError(res.body).error.code, 'validation_failed');
+  });
+
+  // Инвариант без покрытия, найден ревью #47. Отдельно проверяется, что это
+  // ОТВЕТ, а не обрыв соединения: в браузере обрыв неотличим от «нет сети»,
+  // и клиент не может отличить «сервис отверг» от «сервис упал».
+  it('тело больше предела → 400 malformed_request, а не обрыв соединения', async () => {
+    const app = await startApp();
+    const res = await app.create(undefined, {
+      key: cryptoKey(),
+      // ~2 МБ в байтах: выше предела разбора, ниже предела дочитывания.
+      rawBody: JSON.stringify(validBody({ description: 'д'.repeat(1024 * 1024) })),
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(asError(res.body).error.code, 'malformed_request');
+  });
+
+  it('тело у предела принимается', async () => {
+    const app = await startApp();
+    const res = await app.create(undefined, {
+      key: cryptoKey(),
+      rawBody: JSON.stringify(validBody({ description: 'd'.repeat(512) })),
+    });
+
+    assert.equal(res.status, 201);
   });
 
   it('битое тело платежа не создаёт — ключ остаётся свободным', async () => {

@@ -23,6 +23,15 @@ import { MemoryStore } from './store/memory-store.js';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 /** Тело крупнее этого не разбирается: песочнице столько не нужно, а отказ дешевле. */
 const MAX_BODY_BYTES = 1024 * 1024;
+/**
+ * До этого предела тело **дочитывается и отбрасывается**, чтобы ответ 400 дошёл
+ * до клиента целым. Отвечать, пока клиент ещё грузит, HTTP/1.1 позволяет,
+ * но браузер и `fetch` в этот момент пишут в сокет и получают обрыв вместо
+ * ответа — то есть «сервис отверг» становится неотличимо от «сервис упал».
+ * Выше предела соединение рвётся: дочитывание перестаёт быть вежливостью
+ * и становится расходом канала по требованию клиента.
+ */
+const MAX_DRAIN_BYTES = 8 * 1024 * 1024;
 
 export interface AppDeps {
   now?: () => number;
@@ -45,6 +54,21 @@ interface Route {
   id?: string;
 }
 
+/**
+ * Битое процентное кодирование (`%zz`) — не повод для отказа сервера: такой
+ * идентификатор просто не может существовать, и маршрут обязан дойти
+ * до обычного 404. Раньше `decodeURIComponent` бросал прямо из разбора пути,
+ * до проверки заголовков, — ответ выпадал из контракта и ломал порядок
+ * проверок из #32. Находка ревью #47.
+ */
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Разбор пути. Строка запроса и завершающая косая черта маршрут не меняют. */
 function matchRoute(pathname: string, method: string): Route | { allow: string[] } | null {
   const trimmed = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
@@ -57,33 +81,65 @@ function matchRoute(pathname: string, method: string): Route | { allow: string[]
 
   const cancel = /^\/v1\/payments\/([^/]+)\/cancel$/.exec(trimmed);
   if (cancel?.[1] !== undefined) {
-    if (method === 'POST') return { kind: 'cancel', id: decodeURIComponent(cancel[1]) };
+    if (method === 'POST') return { kind: 'cancel', id: safeDecode(cancel[1]) };
     return { allow: ['POST'] };
   }
 
   const single = /^\/v1\/payments\/([^/]+)$/.exec(trimmed);
   if (single?.[1] !== undefined) {
-    if (method === 'GET') return { kind: 'get', id: decodeURIComponent(single[1]) };
+    if (method === 'GET') return { kind: 'get', id: safeDecode(single[1]) };
     return { allow: ['GET'] };
   }
 
   return null;
 }
 
+/**
+ * Чтение тела с пределом.
+ *
+ * Решение по находке ревью #47: превышение предела — это **ответ API**, а не
+ * обрыв соединения. Раньше сокет рвался раньше, чем уходил уже сформированный
+ * 400, и для песочницы это выглядело сетевой ошибкой: клиент не мог отличить
+ * «сервис отверг запрос» от «сервис упал». Тот же довод, по которому CORS
+ * обязателен на ответах 4xx, — иначе браузер показывает не отказ, а обрыв.
+ *
+ * Поэтому чтение прекращается, но соединение живёт до конца ответа; сокет
+ * закрывается уже после того, как ответ ушёл (см. `res.on('finish')`).
+ */
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let overflow = false;
+    const tooLarge = () =>
+      malformedRequest(`тело запроса больше предела в ${String(MAX_BODY_BYTES)} байт`);
+
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(malformedRequest('тело запроса слишком велико'));
-        req.destroy();
+
+      if (!overflow && size > MAX_BODY_BYTES) {
+        overflow = true;
+        chunks.length = 0; // память освобождается сразу, копить незачем
+      }
+
+      if (overflow) {
+        if (size > MAX_DRAIN_BYTES) {
+          // За этой чертой дочитывание перестаёт быть вежливостью и становится
+          // расходом канала по требованию клиента. Здесь — и только здесь —
+          // соединение рвётся; граница названа в ответе проджекту и в README.
+          req.destroy();
+          reject(tooLarge());
+        }
         return;
       }
+
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+
+    req.on('end', () => {
+      if (overflow) reject(tooLarge());
+      else resolve(Buffer.concat(chunks).toString('utf8'));
+    });
     req.on('error', reject);
   });
 }
@@ -115,6 +171,13 @@ export function createServer(deps: AppDeps = {}): http.Server {
   }
 
   const server = http.createServer((req, res) => {
+    // Недочитанный запрос закрывается только после того, как ответ ушёл:
+    // порядок обратный рвёт соединение раньше ответа, и клиент видит обрыв
+    // вместо отказа API. Находка ревью #47 на теле сверх предела.
+    res.on('finish', () => {
+      if (!req.readableEnded) req.destroy();
+    });
+
     void handle(req, res).catch((error: unknown) => {
       // Контракт объявляет 5xx своей границей: формат тела не гарантируется.
       // Конверт 5.4 держим всё равно — клиенту от «границы контракта» не легче.

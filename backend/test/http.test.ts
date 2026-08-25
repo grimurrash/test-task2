@@ -102,6 +102,37 @@ describe('Разбор пути', () => {
     assert.equal(res.status, 200);
   });
 
+  // Находка ревью #47: decodeURIComponent бросал прямо из разбора пути,
+  // до проверки заголовков. Ответ выпадал из контракта (A7) и рушил порядок
+  // проверок из #32 — 500 приходил и вместо 404, и вместо 400.
+  it('битое процентное кодирование в id → 404, а не отказ сервера', async () => {
+    const app = await startApp();
+    const res = await app.raw('GET', '/v1/payments/%zz', {
+      headers: { 'X-Merchant-Id': MERCHANT },
+    });
+
+    assert.equal(res.status, 404);
+    assert.equal((res.body as ErrorEnvelope).error.code, 'payment_not_found');
+  });
+
+  it('битое кодирование не ломает порядок проверок: без мерчанта → 400', async () => {
+    const app = await startApp();
+    const res = await app.raw('GET', '/v1/payments/%zz');
+
+    assert.equal(res.status, 400);
+    assert.equal((res.body as ErrorEnvelope).error.code, 'merchant_id_required');
+  });
+
+  it('битое кодирование на отмене → 404, а не отказ сервера', async () => {
+    const app = await startApp();
+    const res = await app.raw('POST', '/v1/payments/%e0%a4%a/cancel', {
+      headers: { 'X-Merchant-Id': MERCHANT },
+    });
+
+    assert.equal(res.status, 404);
+    assert.equal((res.body as ErrorEnvelope).error.code, 'payment_not_found');
+  });
+
   it('id с процентным кодированием разбирается', async () => {
     const app = await startApp();
     const res = await app.raw('GET', '/v1/payments/pay%20с%20пробелом', {
