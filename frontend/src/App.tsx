@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { createPayment, cancelPayment, listPayments } from './api/client'
 import type { ApiErrorBody, HttpResult, Payment, PaymentListBody } from './api/client'
 import type { JournalEntry, JournalItem, Semantic } from './types'
-import { nowTime, semanticFor, verdictFor } from './lib/semantics'
+import { nowTime, semanticFor, shortKey, verdictFor } from './lib/semantics'
+import { formatAmount } from './lib/money'
 import { Topbar } from './components/Topbar'
 import { RequestForm } from './components/RequestForm'
 import type { FormState } from './components/RequestForm'
@@ -148,6 +149,25 @@ export function groupSemantic(entries: JournalEntry[]): Semantic {
     if (present.includes(s)) return s
   }
   return 'network'
+}
+
+// Честная строка под кнопкой повтора (#81): что именно уйдёт по нажатию.
+// Показывается из хранимого сырого тела — того самого, что будет отправлено.
+export function summarizeRequest(rawBody: string, key: string): string {
+  try {
+    const b = JSON.parse(rawBody) as {
+      amount_minor?: unknown
+      currency?: unknown
+      order_id?: unknown
+    }
+    const amount =
+      typeof b.amount_minor === 'number' && typeof b.currency === 'string'
+        ? formatAmount(b.amount_minor, b.currency)
+        : `${String(b.amount_minor)} ${String(b.currency ?? '')}`
+    return `${amount} · ${String(b.order_id ?? '')} · ключ ${shortKey(key)}`
+  } catch {
+    return `${rawBody.slice(0, 40)}… · ключ ${shortKey(key)}`
+  }
 }
 
 const demoOrder = () => `ORD-${String(Date.now()).slice(-6)}`
@@ -312,16 +332,43 @@ export default function App() {
       await refreshPayments(m)
     })
 
+  // Общий первый шаг сценариев с отменой (#79): при любом исходе создания
+  // кнопка оставляет след — не вернулся id, и группа с подписью сценария
+  // кладётся всё равно, с записью создания внутри и пояснением, почему
+  // отмены не выполнялись (образец — безусловная группа scenarioRace).
+  async function createForCancelScenario(
+    m: Merchant,
+    label: string,
+    rawBody: string,
+  ): Promise<string | undefined> {
+    const key = uid()
+    setLastRequest({ rawBody, key })
+    const res = await createPayment(rawBody, key, m)
+    const createEntry = entryFromResult('create', '/v1/payments', res, key)
+    const id = res.kind === 'http' ? paymentIdOf(res.body) : undefined
+    if (!id) {
+      prepend({
+        kind: 'group',
+        uid: uid(),
+        label,
+        note: 'Создание платежа не вернуло id — шаги отмены не выполнялись.',
+        semantic: groupSemantic([createEntry]),
+        entries: [createEntry],
+      })
+      return undefined
+    }
+    addEntry(createEntry)
+    return id
+  }
+
   const scenarioDoubleCancel = () =>
     run(async () => {
       const m = merchant
-      const created = await doCreate(
+      const id = await createForCancelScenario(
         m,
+        'Сценарий «двойная отмена»',
         demoBody(25000, 'USD', 'Сценарий «двойная отмена»'),
-        uid(),
-        false,
       )
-      const id = created.kind === 'http' ? paymentIdOf(created.body) : undefined
       if (id) {
         const path = `/v1/payments/${id}/cancel`
         const first = entryFromResult('cancel', path, await cancelPayment(id, m))
@@ -346,13 +393,11 @@ export default function App() {
   const scenarioCancelCompleted = () =>
     run(async () => {
       const m = merchant
-      const created = await doCreate(
+      const id = await createForCancelScenario(
         m,
+        'Сценарий «отменить завершённый платёж»',
         demoBody(12002, 'RUB', 'Сценарий «отменить завершённый платёж»'),
-        uid(),
-        false,
       )
-      const id = created.kind === 'http' ? paymentIdOf(created.body) : undefined
       if (id) {
         const path = `/v1/payments/${id}/cancel`
         addEntry(entryFromResult('cancel', path, await cancelPayment(id, m)))
@@ -374,6 +419,9 @@ export default function App() {
             fieldErrors={fieldErrors}
             inFlight={inFlight}
             canRepeat={lastRequest !== null}
+            lastSummary={
+              lastRequest ? summarizeRequest(lastRequest.rawBody, lastRequest.key) : null
+            }
             onSubmit={submit}
             onRepeat={repeat}
             onGenerateKey={generateKey}

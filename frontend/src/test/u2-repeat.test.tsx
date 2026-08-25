@@ -48,4 +48,55 @@ describe('U2: «Отправить ещё раз тот же запрос» по
     expect(await screen.findByText('тот же платёж')).toBeInTheDocument()
     expect(screen.getByText('новый платёж')).toBeInTheDocument()
   })
+
+  it('#81: после сценария кнопка шлёт тело сценария, и строка под кнопкой это показывает', async () => {
+    const posts: RequestInit[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      if (init?.method === 'POST') {
+        posts.push(init)
+        return Promise.resolve(new Response(JSON.stringify(payment), { status: 201 }))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ payments: [] }), { status: 200 }))
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    // сценарий «две одновременные отправки» — 25000 USD, два POST
+    await user.click(screen.getByRole('button', { name: /Две одновременные отправки/ }))
+    await waitFor(() => expect(posts).toHaveLength(2))
+    const scenarioBody = posts[0].body
+    expect(posts[1].body).toBe(scenarioBody)
+
+    // строка честности: показывает тело сценария (USD), а не форму (125000 RUB)
+    const summary = await screen.findByText(/Сейчас это:/)
+    expect(summary.textContent).toContain('USD')
+    expect(summary.textContent).not.toContain('125 000')
+
+    // повтор шлёт именно его
+    await user.click(screen.getByRole('button', { name: 'Отправить ещё раз тот же запрос' }))
+    await waitFor(() => expect(posts).toHaveLength(3))
+    expect(posts[2].body).toBe(scenarioBody)
+    const key = (i: number) => (posts[i].headers as Record<string, string>)['Idempotency-Key']
+    expect(key(2)).toBe(key(0))
+  })
+})
+
+describe('#79: сценарии с отменой оставляют след при обрыве на создании', () => {
+  it.each([
+    ['Двойная отмена', 'двойная отмена'],
+    ['Отменить завершённый платёж', 'отменить завершённый платёж'],
+  ])('«%s»: группа с подписью и пояснением появляется без id', async (button, label) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      if (init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'))
+      return Promise.resolve(new Response(JSON.stringify({ payments: [] }), { status: 200 }))
+    })
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    await user.click(screen.getByRole('button', { name: new RegExp(button) }))
+    await waitFor(() => expect(container.querySelector('.group')).not.toBeNull())
+    const group = container.querySelector('.group')!
+    expect(group.querySelector('.group-label')?.textContent).toContain(label)
+    expect(group.textContent).toContain('шаги отмены не выполнялись')
+    expect(group.querySelector('.entry--network')).not.toBeNull()
+  })
 })
