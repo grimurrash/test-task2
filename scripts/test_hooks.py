@@ -179,7 +179,12 @@ BASH_LS_WITH_MARKER = {
     },
 }
 
-def run(hook, payload, project_dir=None):
+# Куда хуки этого прогона пишут своё состояние и журналы (issue #54).
+# Заполняется в main() временным каталогом; боевые .claude/state и .claude/logs
+# за прогон не открываются ни на чтение, ни на запись.
+STATE_DIR = None
+
+def run(hook, payload, project_dir=None, state_dir=None):
     # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
     # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
     # переменную (или os.getcwd() в её отсутствие). project_dir=None — обычный
@@ -187,7 +192,15 @@ def run(hook, payload, project_dir=None):
     # значит буквально воспроизвести «сессию, у которой CLAUDE_PROJECT_DIR
     # указывает на worktree», а не полагаться на то, что хук прочтёт cwd
     # из payload.
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=project_dir or ROOT)
+    #
+    # issue #54: граница проверки и граница состояния — разные вещи.
+    # CLAUDE_PROJECT_DIR остаётся боевым (иначе поедет сам предмет проверки:
+    # у guard-scope от него считается «внутри/снаружи», а у protected-files —
+    # какие пути защищены). Уводится только то, куда хук ПИШЕТ: state_dir.
+    # Значение по умолчанию — временный каталог прогона, а не ROOT.
+    env = dict(os.environ,
+               CLAUDE_PROJECT_DIR=project_dir or ROOT,
+               CLAUDE_HOOK_STATE_DIR=state_dir or STATE_DIR)
     proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
@@ -274,21 +287,215 @@ def run_git(cwd, cmd):
     return run("guard-git.py", {"tool_name": "Bash",
                                 "tool_input": {"command": cmd}, "cwd": cwd})
 
-def main():
-    failures = 0
-    print("Проверка хуков. Корень проекта: %s\n" % ROOT)
+# --- issue #54: прогон не должен наблюдаться снаружи набора ---
 
-    # Прогон не должен зависеть от того, открыта ли сейчас зона: кейсы «без
-    # пропуска» при действующем пропуске получили бы allow и покраснели на ровном
-    # месте. Пропуск снимается на время проверки и возвращается в конце — чужое
-    # разрешение тест не тратит и раньше срока не гасит.
-    unlock_path = os.path.join(ROOT, ".claude", "state", "unlock.json")
-    log_path = os.path.join(ROOT, ".claude", "logs", "guard.jsonl")
-    saved_unlock = None
-    if os.path.exists(unlock_path):
-        with open(unlock_path, encoding="utf-8") as fh:
-            saved_unlock = fh.read()
-        os.remove(unlock_path)
+def prod_roots():
+    """Корни, за которыми следит сторож: расположение самого набора и общая
+    (основная) копия репозитория.
+
+    Из рабочей копии это разные каталоги. В `.worktrees/<роль>` собственные
+    `.claude/state` и `.claude/logs` пусты — они не в git, — а хуки пишут
+    по `project_dir()`, то есть в основную копию (issue #35: CLAUDE_PROJECT_DIR
+    при переходе агента в копию не меняется). Сторож, знающий только про ROOT,
+    из рабочей копии оказался бы слеп ровно в том режиме, в котором роли
+    и работают: смотрел бы на пустые файлы и всегда рапортовал «чисто».
+    """
+    roots = [os.path.realpath(ROOT)]
+    def add(path):
+        path = os.path.realpath(path)
+        if path not in roots:
+            roots.append(path)
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                              cwd=ROOT, capture_output=True, text=True, timeout=5)
+        common = proc.stdout.strip()
+        if proc.returncode == 0 and common:
+            if not os.path.isabs(common):
+                common = os.path.join(ROOT, common)
+            add(os.path.dirname(os.path.realpath(common)))
+    except Exception:
+        pass
+    if os.environ.get("CLAUDE_PROJECT_DIR"):
+        add(os.environ["CLAUDE_PROJECT_DIR"])
+    return roots
+
+def prod_paths(root):
+    """Боевые файлы, до которых набору нет дела. Открываются здесь только
+    на чтение и только ради улики — снимок для восстановления был бы тем же
+    потерянным обновлением, из-за которого задача и заведена."""
+    return {
+        "unlock": os.path.join(root, ".claude", "state", "unlock.json"),
+        "verify": os.path.join(root, ".claude", "state", "verify.json"),
+        "guard.jsonl": os.path.join(root, ".claude", "logs", "guard.jsonl"),
+        "untrusted.jsonl": os.path.join(root, ".claude", "logs", "untrusted.jsonl"),
+    }
+
+# Подписи, по которым запись в журнале опознаётся как оставленная набором.
+# Ищется подпись в дописанном за прогон хвосте, а не изменение размера файла:
+# в репозитории работают несколько сессий сразу, сосед дописывает строку в тот же
+# журнал, и проверка «размер не изменился» краснела бы не про изоляцию.
+FIXTURE_MARKS = (
+    '"unlock_reason": "проверка"',
+    '"human_until": "тест"',
+    "guard-scope-root-",
+    "guard-git-head-",
+    "hooks-state-",
+    "hooks-prod-",
+    "scan-marker-",
+    "/tmp/tariffs.md",
+    "gh issue view 6",
+)
+
+def _json_or_empty(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+def _size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+def _tail(path, offset):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            return fh.read()
+    except OSError:
+        return ""
+
+def prod_state():
+    """Что видно в боевом состоянии сейчас, по каждому корню: живые зоны,
+    отметки сессий, длины журналов. Сравнение до и после прогона — и есть
+    проверка изоляции."""
+    out = {}
+    for root in prod_roots():
+        p = prod_paths(root)
+        unlock = _json_or_empty(p["unlock"])
+        sessions = _json_or_empty(p["verify"]).get("sessions", {})
+        out[root] = {
+            "zones": {z: rec.get("until") for z, rec in unlock.items()
+                      if isinstance(rec, dict)},
+            "fixture_zones": sorted(z for z, rec in unlock.items()
+                                    if isinstance(rec, dict) and rec.get("reason") == "проверка"),
+            "sessions": {s: (rec.get("tests") or {}).get("ts") for s, rec in sessions.items()
+                         if isinstance(rec, dict)},
+            "guard.jsonl": _size(p["guard.jsonl"]),
+            "untrusted.jsonl": _size(p["untrusted.jsonl"]),
+        }
+    return out
+
+def prod_checks(before):
+    """Список (заголовок, ок, подробность) — по одному на боевой файл.
+    Нарушение в любом из корней красит проверку и называет корень поимённо."""
+    after = prod_state()
+    lost, fake, lost_s, marks = [], [], [], {}
+    zones = sessions = 0
+    tail_bytes = 0
+    for root, was in before.items():
+        now = after.get(root, {"zones": {}, "fixture_zones": [], "sessions": {}})
+        name = os.path.basename(root)
+        zones += len(was["zones"])
+        sessions += len(was["sessions"])
+        lost += ["%s:%s" % (name, z) for z, until in was["zones"].items()
+                 if now["zones"].get(z) != until]
+        fake += ["%s:%s" % (name, z) for z in
+                 sorted(set(now["fixture_zones"]) - set(was["fixture_zones"]))]
+        lost_s += ["%s:%s" % (name, s) for s, ts in was["sessions"].items()
+                   if now["sessions"].get(s) != ts]
+        p = prod_paths(root)
+        for log in ("guard.jsonl", "untrusted.jsonl"):
+            tail = _tail(p[log], was[log])
+            tail_bytes += len(tail.encode("utf-8"))
+            found = sorted(m for m in FIXTURE_MARKS if m in tail)
+            if found:
+                marks.setdefault(log, []).extend("%s:%s" % (name, m) for m in found)
+
+    where = "корней: %d" % len(before)
+    out = [
+        ("пропуск, выданный до прогона, жив после прогона", not lost,
+         ("зоны потеряны или изменены: %s" % ", ".join(sorted(lost))) if lost else
+         ("проверено на %d выданных, %s" % (zones, where) if zones
+          else "выданных пропусков не было, %s" % where)),
+        ("набор не выдал пропуск от своего имени", not fake,
+         ("фикстурные зоны в боевом файле: %s" % ", ".join(sorted(fake))) if fake else "нет"),
+        ("отметки чужих сессий в verify.json целы", not lost_s,
+         ("потеряны отметки: %s" % ", ".join(sorted(lost_s))) if lost_s else
+         ("проверено на %d сессиях, %s" % (sessions, where) if sessions
+          else "отметок о прогонах не было, %s" % where)),
+    ]
+    for log in ("guard.jsonl", "untrusted.jsonl"):
+        found = sorted(set(marks.get(log, [])))
+        out.append(("в боевой %s нет записей набора" % log, not found,
+                    ("найдены подписи набора: %s" % ", ".join(found)) if found
+                    else "дописано за прогон во всех корнях: %d Б (соседние сессии)" % tail_bytes))
+    return out
+
+def make_prod_double():
+    """Двойник боевого состояния: выданный пропуск, отметка чужой сессии,
+    непустые журналы. Нужен потому, что сторож за настоящим состоянием
+    проверяет только то, что там сейчас есть: без выданного пропуска строка
+    «пропуск жив после прогона» зелена и на сломанном коде. Здесь пропуск
+    есть всегда, и проверка перестаёт зависеть от того, открывал ли сэр зону.
+    Вызывающий отвечает за shutil.rmtree."""
+    root = tempfile.mkdtemp(prefix="hooks-prod-", dir=_scratch_dir_outside_tmp())
+    state = os.path.join(root, ".claude", "state")
+    logs = os.path.join(root, ".claude", "logs")
+    os.makedirs(state)
+    os.makedirs(logs)
+    with open(os.path.join(state, "unlock.json"), "w", encoding="utf-8") as fh:
+        json.dump({"protected-files": {"until": time.time() + 600,
+                                       "human_until": "двойник",
+                                       "reason": "выдан до прогона"}},
+                  fh, ensure_ascii=False)
+    with open(os.path.join(state, "verify.json"), "w", encoding="utf-8") as fh:
+        json.dump({"sessions": {"сосед": {"tests": {"ts": time.time(), "human_ts": "x",
+                                                    "command": "npm test", "failed": False}}}},
+                  fh, ensure_ascii=False)
+    for name in ("guard.jsonl", "untrusted.jsonl"):
+        with open(os.path.join(logs, name), "w", encoding="utf-8") as fh:
+            fh.write('{"ts": "до прогона", "event": "чужая запись"}\n')
+    return root
+
+def snapshot_tree(root):
+    """Содержимое всех файлов под .claude — побайтно, для сравнения до/после."""
+    out = {}
+    for base, _dirs, files in os.walk(os.path.join(root, ".claude")):
+        for name in files:
+            path = os.path.join(base, name)
+            try:
+                with open(path, "rb") as fh:
+                    out[os.path.relpath(path, root)] = fh.read()
+            except OSError:
+                out[os.path.relpath(path, root)] = None
+    return out
+
+def main():
+    global STATE_DIR
+    # Каталог состояния прогона. Всё, что хуки пишут за время проверки, лежит
+    # здесь и удаляется вместе с ним; боевые файлы не открываются на запись.
+    STATE_DIR = tempfile.mkdtemp(prefix="hooks-state-", dir=_scratch_dir_outside_tmp())
+    try:
+        return _main()
+    finally:
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
+
+def _main():
+    failures = 0
+    print("Проверка хуков. Корень проекта: %s" % ROOT)
+    print("Состояние прогона: %s\n" % STATE_DIR)
+
+    # issue #54: набор работает со своим каталогом состояния. Прежде здесь стояло
+    # обратное — боевой unlock.json удалялся на весь прогон и возвращался снимком
+    # в конце. Отсюда две беды сразу: пока идут тесты, действующего пропуска
+    # не существует ни для кого, а пропуск, выданный во время прогона, затирался
+    # восстановлением. Снимок аккуратнее гонку не убирает, только сужает окно.
+    prod_before_run = prod_state()
+    unlock_path = os.path.join(STATE_DIR, ".claude", "state", "unlock.json")
+    log_path = os.path.join(STATE_DIR, ".claude", "logs", "guard.jsonl")
     current = None
     for hook, title, payload, expected in CASES:
         if hook != current:
@@ -583,11 +790,11 @@ def main():
         shutil.rmtree(scope_root, ignore_errors=True)
 
     print("\n  mark-verify.py")
-    state_path = os.path.join(ROOT, ".claude", "state", "verify.json")
-    saved = None
-    if os.path.exists(state_path):
-        with open(state_path, encoding="utf-8") as fh:
-            saved = fh.read()
+    # issue #54: verify.json тоже свой. Прежде набор десять раз за прогон удалял
+    # боевой файл — и сосед, закрывавший сессию в этот момент, получал от гейта
+    # ложное «тесты не запускались». Снимок здесь снимался даже не в начале
+    # прогона, а перед этим разделом: окно уже, потерянное обновление то же.
+    state_path = os.path.join(STATE_DIR, ".claude", "state", "verify.json")
 
     # Каждая команда проверяется на чистом состоянии: иначе запись, сделанную
     # предыдущей командой, легко принять за успех текущей.
@@ -709,7 +916,7 @@ def main():
                 os.remove(gate_marker)
             proc = run("gate-quality.py",
                       {"session_id": sid, "cwd": gate_repo, "stop_hook_active": False},
-                      project_dir=gate_repo)
+                      project_dir=gate_repo, state_dir=gate_repo)
             blocked = gate_blocked(proc)
             ok = blocked == expected_block
             failures += 0 if ok else 1
@@ -718,20 +925,56 @@ def main():
     finally:
         shutil.rmtree(gate_repo, ignore_errors=True)
 
-    # Состояние возвращается таким, каким было до проверки: тест не имеет права
-    # оставлять после себя отметку о прогоне, которого не было.
-    if saved is None:
-        if os.path.exists(state_path):
-            os.remove(state_path)
-    else:
-        with open(state_path, "w", encoding="utf-8") as fh:
-            fh.write(saved)
+    print("\n  изоляция состояния — на двойнике боевого корня (issue #54)")
+    # Хук получает CLAUDE_PROJECT_DIR, указывающий на двойник, то есть считает
+    # его своим проектом: там лежат выданный пропуск, отметка чужой сессии
+    # и непустые журналы. Писать он обязан не туда, а в каталог прогона —
+    # и пропуск из двойника не должен ему ничего открывать.
+    double = make_prod_double()
+    try:
+        before = snapshot_tree(double)
+        log_before = _size(log_path)
+        # Три хука, каждый из которых до правки писал в боевое: отказ — в журнал,
+        # отметку о прогоне — в verify.json, находку — в untrusted.jsonl.
+        got = decision_of(run("guard-protected-files.py",
+            {"tool_name": "Edit",
+             "tool_input": {"file_path": os.path.join(double, ".claude", "settings.json")}},
+            project_dir=double))
+        run("mark-verify.py",
+            {"session_id": "двойник", "tool_name": "Bash",
+             "tool_input": {"command": "python3 -m pytest tests/"},
+             "tool_response": {"stdout": "OK", "is_error": False}},
+            project_dir=double)
+        run("scan-untrusted.py", INJECTION_CASE, project_dir=double)
+        after = snapshot_tree(double)
 
-    # Пропуск сэра возвращается таким, каким был до прогона.
-    if saved_unlock is not None:
-        os.makedirs(os.path.dirname(unlock_path), exist_ok=True)
-        with open(unlock_path, "w", encoding="utf-8") as fh:
-            fh.write(saved_unlock)
+        changed = sorted(set(before) ^ set(after)) + sorted(
+            k for k in before if k in after and before[k] != after[k])
+        tail = _tail(log_path, log_before)
+        isolation_cases = [
+            ("двойник не изменился ни в одном файле", not changed,
+             ("изменены: %s" % ", ".join(changed)) if changed
+             else "%d файла совпали побайтно" % len(before)),
+            ("пропуск, лежащий в двойнике, зону не открыл", got == "deny",
+             "решение: %s (состояние берётся из своего каталога, не из проекта)" % got),
+            ("запись ушла в каталог прогона, а не в никуда", "deny" in tail,
+             "дописано в журнал прогона: %d Б" % len(tail.encode("utf-8"))),
+        ]
+        for title, ok, detail in isolation_cases:
+            failures += 0 if ok else 1
+            print("    %s %-52s %s" % ("✓" if ok else "✗", title, detail))
+    finally:
+        shutil.rmtree(double, ignore_errors=True)
+
+    print("\n  боевое состояние после прогона — сторож, а не восстановление")
+    # Раньше на этом месте боевые файлы возвращались из снимка. Возвращать
+    # больше нечего: их никто не трогал. Здесь только сверка — и она смотрит
+    # на подписи набора в дописанном хвосте, а не на размер файла: соседние
+    # сессии пишут в те же журналы, и «размер не изменился» краснело бы не про
+    # изоляцию.
+    for title, ok, detail in prod_checks(prod_before_run):
+        failures += 0 if ok else 1
+        print("    %s %-46s %s" % ("✓" if ok else "✗", title, detail))
 
     print("\n%s" % ("ВСЁ ЗЕЛЁНОЕ" if failures == 0 else "ПРОВАЛОВ: %d" % failures))
     return 1 if failures else 0
