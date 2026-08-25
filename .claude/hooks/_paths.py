@@ -225,7 +225,22 @@ DIGITS_ONLY = re.compile(r"^\d+(?:/+\d+)*$")
 # правило писалось. Проверено запуском: до этого различения 6 ложных отказов
 # из 8, после — 0 при 0 пропущенных опасных форм.
 SLASHES_ONLY = re.compile(r"^/+$")
-OPERAND = re.compile(r"^(?:\d+(?:\.\d+)?|[A-Za-z_]\w*)$")
+
+# Операнд: число, имя, обращение к полю или элементу (`obj.value`, `values[i]`).
+# Простого имени мало — четвёртый круг внешнего ревью показал, что составные
+# операнды встречаются в обычном коде чаще простых, и на них возвращался
+# ложный отказ. Точка и скобки индекса здесь безопасны: слева от знака деления
+# они завершают выражение, а вызов с аргументом-корнем (`rmtree(/)`) слева
+# имеет ОТКРЫВАЮЩУЮ скобку и операндом не считается.
+OPERAND = re.compile(r"^(?:\d+(?:\.\d+)?|[A-Za-z_][\w.]*(?:\[[^\]]*\])?)$")
+
+# Имя команды, собранное на ходу (`$cmd`, `${cmd}`), разобрать нельзя: чем
+# окажется стадия — неизвестно. Незнакомая конструкция трактуется в пользу
+# отказа, поэтому слэш в такой стадии остаётся путём.
+#
+# Одиночный `$` сюда не попадает намеренно: он приходит от арифметического
+# раскрытия `$((…))`, где следующим токеном идёт `((`. Проверено разбором.
+DYNAMIC_WORD = re.compile(r"^\$\{?\w")
 
 # Команды, у которых аргумент — файл. Список неполон принципиально и стоит
 # на стороне отказа: незнакомая команда соседей не отменяет, но и не разрешает.
@@ -248,13 +263,38 @@ def _operand(token, side):
     raw = token or ""
     if not raw:
         return False
-    if side == "left" and set(raw) <= set(")]}"):
+    # Скобка любого рода: закрывающая ЗАВЕРШАЕТ выражение слева (`(a + b) / c`,
+    # `[1,2][0] / 2`), открывающая НАЧИНАЕТ его справа (`a / (b + c)`).
+    # Круглыми не ограничиваемся: квадратная того же класса — замечание
+    # проверяющей. Обратное сочетание операндом не делает: у `rmtree(/)` слева
+    # стоит ОТКРЫВАЮЩАЯ скобка, и он по-прежнему отклоняется.
+    if side == "left" and raw[-1] in ")]}":
         return True
-    if side == "right" and set(raw) <= set("([{"):
+    if side == "right" and raw[0] in "([{":
         return True
-    return bool(OPERAND.match(re.sub(r"^\W+|\W+$", "", raw)))
+    # Сырой токен проверяется ПЕРВЫМ: зачистка хвостовой пунктуации срезала бы
+    # закрывающую скобку индекса, и `values[i]` переставал быть операндом.
+    # Зачистка нужна для другого — для хвоста вроде `2}` из тела awk.
+    return bool(OPERAND.match(raw)
+                or OPERAND.match(re.sub(r"^\W+|\W+$", "", raw)))
 
-def _is_division(tokens, i):
+def _fs_word(token):
+    """Токен называет файловую команду — прямо или как значение присваивания.
+
+    Значение присваивания проверяется потому, что имя команды туда прячется:
+    `cmd=chmod; $cmd -R 777 / 2`. В стадии со слэшем файловой команды нет,
+    соседи — операнды, и корень выпадал из разбора. Регрессия МОЕЙ правки:
+    до неё main отдавал здесь кандидата `/`. Нашёл четвёртый круг ревью.
+    """
+    tok = token or ""
+    if os.path.basename(tok).lower() in FS_COMMANDS:
+        return True
+    if "=" in tok:
+        value = tok.split("=", 1)[1]
+        return os.path.basename(value).lower() in FS_COMMANDS
+    return False
+
+def _is_division(tokens, i, all_tokens=None):
     """True, если токен из слэшей — знак деления, а не корень.
 
     Файловая команда ищется ПО ВСЕЙ СТАДИИ, а не по её имени. Проверять имя
@@ -265,11 +305,28 @@ def _is_division(tokens, i):
     имя, СДВИНУТОЕ соседней стадией, и не проверил файловую команду ВНУТРИ
     встроенного кода — та же ошибка обобщения по одной форме, что и с ценой.
     """
-    for tok in tokens:
-        if os.path.basename(tok or "").lower() in FS_COMMANDS:
+    # Присваивания ищутся по ВСЕЙ команде, а не по стадии: имя команды кладут
+    # в переменную в одной стадии, используют в другой.
+    for tok in (all_tokens or tokens):
+        if "=" in tok and _fs_word(tok):
             return False
     prev = tokens[i - 1] if i else ""
     nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+    # Имя файловой команды, стоящее ВПЛОТНУЮ к знаку деления, — это операнд,
+    # а не команда: `const mount = 10; console.log(mount / 2)`. Признак «имя
+    # встречается среди токенов» шире свойства «команда исполняется» ровно
+    # на эту тень, и проверяющая назвала это тем же перекосом, что я допустил
+    # дважды до того. Исключение снимается, если стадией командует именно она
+    # (`cp / dst`): тогда слэш — её аргумент.
+    name = command_word(tokens)
+    for k, tok in enumerate(tokens):
+        if DYNAMIC_WORD.match(tok or ""):
+            return False
+        if not _fs_word(tok):
+            continue
+        if k in (i - 1, i + 1) and os.path.basename(tok or "").lower() != name:
+            continue          # соседний токен — операнд, а не команда стадии
+        return False
     return _operand(prev, "left") and _operand(nxt, "right")
 
 # Токен из одних звёздочек — glob-шаблон, а не путь. Ведущий слэш сюда
@@ -643,7 +700,8 @@ def path_candidates(command):
     # `;` внутри кавычек (`sh -c "echo /app; ls /tmp/x"`) стадию не разрывает —
     # до перехода на токены это давало ложные срабатывания на аргументах,
     # предназначенных контейнеру.
-    for stage_tokens in split_stages(tokenize(normalized)):
+    all_tokens = tokenize(normalized)
+    for stage_tokens in split_stages(all_tokens):
         if not stage_tokens:
             continue
         # Перенаправления реальны в любой стадии, включая docker: вывод пишется
@@ -671,7 +729,7 @@ def path_candidates(command):
                 continue
             if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
                 continue
-            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i):
+            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i, all_tokens):
                 continue
             if "/" in token or token in (".", ".."):
                 found.append(token)

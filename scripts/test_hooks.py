@@ -169,6 +169,32 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print((a + b) / c)\" > docs/out.txt"}}, "allow"),
     ("guard-scope.py", "скобки справа, python",
      {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(a / (b + c))\" > docs/out.txt"}}, "allow"),
+    # Четвёртый круг ревью: имя команды, собранное на ходу. В стадии со слэшем
+    # файловой команды нет, соседи — операнды, и корень выпадал. Регрессия моей
+    # же правки: до неё разбор отдавал здесь кандидата.
+    ("guard-scope.py", "имя файловой команды из переменной",
+     {"tool_name": "Bash", "tool_input": {"command": "cmd=chmod; $cmd -R 777 / 2"}}, "deny"),
+    # Замечание проверяющей: признак «имя встречается среди токенов» шире
+    # свойства «команда исполняется» ровно на тень — имя файловой команды,
+    # использованное как имя переменной. Тот же перекос, что дважды до этого:
+    # проверил свойство, распространил на его тень. Пять форм, а не одна.
+    ("guard-scope.py", "имя файловой команды как переменная, node",
+     {"tool_name": "Bash", "tool_input": {"command": "node -e \"const mount = 10; console.log(mount / 2)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "имя файловой команды как переменная слева",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(find / 2)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "имя файловой команды как переменная справа",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(2 / find)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "два имени файловых команд сразу",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(tar / zip)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "но стадией командует она сама — слэш её аргумент",
+     {"tool_name": "Bash", "tool_input": {"command": "cp / dst"}}, "deny"),
+    # Квадратная скобка — операнд того же класса, что круглая.
+    ("guard-scope.py", "индекс литерала слева",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print([1,2][0] / 2)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "индекс переменной слева",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(values[i] / count)\" > docs/out.txt"}}, "allow"),
+    ("guard-scope.py", "обращение к полю слева",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"print(obj.value / 2)\" > docs/out.txt"}}, "allow"),
     # Рабочие копии ролей лежат внутри репозитория: снаружи их создание упирается
     # в запрет записи за пределы проекта, а ослаблять эту границу ради удобства
     # дороже, чем держать копии у себя.
