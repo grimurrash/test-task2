@@ -49,15 +49,27 @@ SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)|>\(([^()]*)\)
 
 def tokenize(text):
     """Токены строки. Пустой список — признак того, что разобрать не удалось;
-    вызывающий обязан считать такую команду неизвестной, а не безопасной."""
+    вызывающий обязан считать такую команду неизвестной, а не безопасной.
+
+    Перевод строки — такой же разделитель команд, как `;`, но shlex считает
+    его пробелом. Поэтому он заменяется явным оператором ДО разбора: без
+    этого `docker run img` и стоящая следующей строкой команда сливались
+    в одну стадию, и контейнерное сужение прятало вторую. Регрессия,
+    внесённая переходом на токены и пойманная третьим кругом внешнего ревью.
+    """
     if not text:
         return []
-    lex = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    try:
-        return list(lex)
-    except ValueError:
-        return []
+    out = []
+    for idx, line in enumerate(text.split("\n")):
+        if idx:
+            out.append(";")             # перевод строки — разделитель команд
+        lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        try:
+            out.extend(lex)
+        except ValueError:
+            return []                   # не разобрали — команда неизвестна
+    return out
 
 def substitutions(text):
     """Тела подстановок команд — они исполняются хостом."""
@@ -95,7 +107,7 @@ WRITE_INTENT = re.compile(
 
 # Встроенный код нельзя разобрать регуляркой: если он упоминает защищённый путь
 # или путь наружу, считаем это записью. Ложный отказ дешевле пропущенной записи.
-INLINE_CODE = re.compile(
+_INLINE_RE = re.compile(
     r"\b(?:python[\d.]*|python3)\s+-c\b|\bnode\s+-e\b|\bperl\s+-[a-z]*e\b"
     r"|\bruby\s+-e\b|\bphp\s+-r\b|\bosascript\b|\bawk\b[^|;&]*\bprint\s*>"
     # Код, поданный интерпретатору документом (`python3 - <<'PY'`, `bash <<'SH'`),
@@ -115,6 +127,30 @@ INLINE_CODE = re.compile(
     r"(?:\S*/)?(?:(?:ba|z|k|da|c|fi)?sh|python[\d.]*|node|deno|bun"
     r"|perl|ruby|php|osascript|lua|Rscript|tclsh|pwsh)\b[^\n]*<<",
     re.I)
+
+class _InlineCode:
+    """Признак встроенного кода. Не регулярка, а объект с тем же методом —
+    хуки продолжают звать `INLINE_CODE.search(...)` и менять их не пришлось.
+
+    Помимо известных форм (`python3 -c`, `node -e`) сюда попадает ЛЮБОЙ
+    документ, тело которого не признано данными: разбор получателя идёт
+    по токенам, поэтому незнакомый интерпретатор (`pypy3`, собственный
+    скрипт) больше не проходит мимо только из-за отсутствия в перечне.
+    Третий круг внешнего ревью: тело сохранялось верно, но проверка
+    выходила раньше, чем до него доходила.
+    """
+
+    def search(self, text):
+        m = _INLINE_RE.search(text or "")
+        if m:
+            return m
+        for line in (text or "").split("\n"):
+            if heredoc_delimiter(line) and not heredoc_body_is_data(line):
+                return line
+        return None
+
+INLINE_CODE = _InlineCode()
+
 
 def normalize(text):
     """Разворачивает $HOME и ~, снимает кавычки, вырезает тела heredoc.
@@ -214,6 +250,16 @@ INTERPRETERS = {
     "ts-node", "tsx", "make", "sqlite3", "psql", "mysql", "gdb", "jq",
 }
 
+# Получатели, которые тело ЗАПИСЫВАЮТ, а не исполняют. Решение построено
+# от этого списка, а не от списка интерпретаторов: незнакомое имя оставляет
+# тело под проверкой. Обратный порядок стоил дыры — `pypy3`, собственный
+# скрипт, `eval` считались пишущими просто потому, что их не было в перечне
+# интерпретаторов (третий круг внешнего ревью).
+DATA_SINKS = {
+    "cat", "tee", "gh", "git", "cp", "install", "dd", "sponge",
+    "curl", "wget", "mail", "sendmail", "base64", "tr", "fold",
+}
+
 def command_word(tokens):
     """Имя программы стадии: пропускает обёртки, их ключи, присваивания
     переменных и разделитель `--`. Возвращает пустую строку, если не нашлось."""
@@ -249,11 +295,27 @@ def heredoc_body_is_data(opening_line):
     `timeout 10`, `exec`, разделитель `--`) его отодвигали — тело исполнялось,
     но считалось данными. Найдено двумя кругами внешнего ревью.
     """
-    name = command_word(tokenize(opening_line))
-    if not name:
+    toks = tokenize(opening_line)
+    if not toks:
         return False                    # не разобрали — не вырезаем
-    base = re.sub(r"[\d.]+$", "", name)  # python3.12 → python
-    return not (name in INTERPRETERS or base in INTERPRETERS or base == "python")
+
+    # Конвейер: тело уходит на stdin ПОСЛЕДНЕЙ команды, а не первой.
+    # `cat <<'EOF' | bash` — документ для bash, а не для cat. Третий круг
+    # внешнего ревью: тело вырезалось как данные и код исчезал из проверки.
+    if "|" in toks:
+        return False                    # получателя не разобрать — не вырезаем
+
+    name = command_word(toks)
+    if not name:
+        return False
+
+    # Тело считается данными, только когда получатель УВЕРЕННО опознан как
+    # пишущий. Прежняя проверка была от обратного — «нет в списке
+    # интерпретаторов, значит пишет», — и противоречила собственному
+    # комментарию о безопасном исходе: незнакомое имя (`pypy3`, свой скрипт,
+    # `eval`) уносило тело из проверки. Найдено третьим кругом ревью.
+    base = re.sub(r"[\d.]+$", "", name)
+    return name in DATA_SINKS or base in DATA_SINKS
 
 def strip_heredocs(command):
     """Команда без тел heredoc-документов: остаётся то, что она исполняет.
@@ -287,8 +349,24 @@ def strip_heredocs(command):
             end += 1
         if end >= len(lines):
             continue          # метка конца не найдена — тело не вырезаем
+        # Метка в кавычках (`<<'EOF'`) отключает подстановки — тело буквально
+        # данные. Без кавычек оболочка исполняет `$(...)` и обратные кавычки
+        # ДО того, как получатель их запишет: `cat > f <<EOF` с подстановкой,
+        # удаляющей каталог, вырезался целиком и удаление исчезало из проверки.
+        # Третий круг внешнего ревью. Поэтому у некавыченного документа
+        # подстановки сохраняются, а остальное тело вырезается как данные.
+        if not heredoc_delimiter_quoted(line):
+            body = "\n".join(lines[i:end])
+            for inner in substitutions(body):
+                out.append(inner)
         i = end + 1           # пропустить тело вместе со строкой-меткой
     return "\n".join(out)
+
+def heredoc_delimiter_quoted(line):
+    """True, если метка документа взята в кавычки — тогда оболочка тело
+    не трогает и оно действительно только данные."""
+    m = re.search(r"<<-?\s*(['\"])", line)
+    return bool(m)
 
 def heredoc_delimiter(line):
     """Метка документа, если строка ДЕЙСТВИТЕЛЬНО его открывает.
