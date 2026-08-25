@@ -52,6 +52,12 @@ def resolve(path, root):
         expanded = os.path.join(root, expanded)
     return os.path.realpath(expanded)
 
+# Токен из одних цифр и слэшей — арифметика, а не путь: `//60` внутри
+# python3 -c читался как абсолютный путь и получал отказ. Отбрасывается только
+# то, что не начинается с точки или тильды, поэтому `../2` и `./7` остаются
+# путями и проверяются: сосед по имени из цифр — обычное дело.
+DIGITS_ONLY = re.compile(r"^/*(?:\d+/*)*$")
+
 def path_candidates(command):
     """Всё, что в команде похоже на путь: аргументы, цели перенаправления."""
     normalized = normalize(command)
@@ -61,6 +67,8 @@ def path_candidates(command):
     for token in SPLIT.split(normalized):
         token = token.strip("<>")
         if not token or token.startswith("-"):
+            continue
+        if DIGITS_ONLY.match(token):
             continue
         if "/" in token or token in (".", ".."):
             found.append(token)
