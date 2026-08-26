@@ -46,6 +46,7 @@ KEY=$(uuidgen)
 Первый запрос с этим ключом создаёт платёж и отвечает **201**.
 
 ```bash
+# ожидается 201
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -71,6 +72,7 @@ echo "$PAYMENT_ID"
 совпадают и `id`, и `created_at`. Второй платёж не создан.
 
 ```bash
+# ожидается 200
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -86,6 +88,7 @@ curl -i -X POST "$API/v1/payments" \
 Ключ уже занят другим запросом. Существующий платёж при этом **не меняется**.
 
 ```bash
+# ожидается 409
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -101,6 +104,7 @@ curl -i -X POST "$API/v1/payments" \
 ## 4. Статус платежа → 200
 
 ```bash
+# ожидается 200
 curl -i "$API/v1/payments/$PAYMENT_ID" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -109,6 +113,7 @@ curl -i "$API/v1/payments/$PAYMENT_ID" \
 `payment_not_found`:
 
 ```bash
+# ожидается 404
 curl -i "$API/v1/payments/$PAYMENT_ID" \
   -H "X-Merchant-Id: other-shop"
 ```
@@ -118,6 +123,7 @@ curl -i "$API/v1/payments/$PAYMENT_ID" \
 Отмена переводит платёж из `pending` в `canceled`.
 
 ```bash
+# ожидается 200
 curl -i -X POST "$API/v1/payments/$PAYMENT_ID/cancel" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -134,6 +140,7 @@ DONE_ID=$(curl -s -X POST "$API/v1/payments" \
   -d '{"amount_minor":150002,"currency":"RUB","order_id":"order-2026-0825-0003"}' \
   | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 
+# ожидается 409
 curl -i -X POST "$API/v1/payments/$DONE_ID/cancel" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -141,6 +148,7 @@ curl -i -X POST "$API/v1/payments/$DONE_ID/cancel" \
 ## Список платежей — от повторов не растёт
 
 ```bash
+# ожидается 200
 curl -i "$API/v1/payments" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -164,13 +172,16 @@ curl -i "$API/v1/payments" \
 `method_not_allowed`.
 
 ```bash
+# ожидается 404
 curl -i "$API/v1/nope" -H "X-Merchant-Id: $MERCHANT"
+# ожидается 405
 curl -i -X DELETE "$API/v1/payments" -H "X-Merchant-Id: $MERCHANT"
 ```
 
 Без `X-Merchant-Id` → **400** `merchant_id_required`:
 
 ```bash
+# ожидается 400
 curl -i "$API/v1/payments"
 ```
 
@@ -178,6 +189,7 @@ curl -i "$API/v1/payments"
 однократности одинаково для обоих заголовков.
 
 ```bash
+# ожидается 400
 curl -i "$API/v1/payments" \
   -H "X-Merchant-Id: $MERCHANT" \
   -H "X-Merchant-Id: demo-shop-b"
@@ -187,6 +199,7 @@ curl -i "$API/v1/payments" \
 `idempotency_key_required`:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -203,6 +216,7 @@ curl -i -X POST "$API/v1/payments" \
 ```bash
 # ключ экзотический, но каждый раз новый: повтор прежнего вернул бы 200
 # и тот же платёж — это идемпотентность, а не отказ по набору символов
+# ожидается 201
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -213,6 +227,7 @@ curl -i -X POST "$API/v1/payments" \
 Слишком длинный:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -225,6 +240,7 @@ curl -i -X POST "$API/v1/payments" \
 запятую:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -242,6 +258,7 @@ curl -i -X POST "$API/v1/payments" \
 `Content-Type: application/json`:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -253,6 +270,7 @@ curl -i -X POST "$API/v1/payments" \
 `details.errors` приходят **все** нарушения разом, а не первое попавшееся:
 
 ```bash
+# ожидается 422
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \

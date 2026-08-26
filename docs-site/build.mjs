@@ -84,23 +84,26 @@ function checkContract(spec, raw) {
 }
 
 // Страница отдаёт контракт как есть, а адрес стенда подставляет только в свой
-// рендер и в примеры. Значит на нестандартном порту скачанный `openapi.yaml`
-// говорит про 8080 — и тот, кто утащит его в Postman или в генератор клиента,
+// рендер и в примеры. Значит скачанный `openapi.yaml` может говорить не то,
+// что сценарии — и тот, кто утащит его в Postman или в генератор клиента,
 // повторит ровно ту ошибку «работает, но не то», ради которой заводилась #85.
-// Предупреждение показывается лишь когда адреса действительно разошлись:
-// на стандартном стенде его нет, шуметь не о чем.
-const specNotice =
-  apiBase === DEFAULT_API_BASE
+//
+// Сравнивается адрес стенда с **фактическим** `servers` контракта, а не
+// с константой сборщика: контракт правят, и константа рано или поздно начнёт
+// врать. Проверяющий #105 показал оба промаха такого сравнения — заметка
+// про расхождение там, где его нет, и молчание там, где оно есть.
+const specNotice = (contractServer) =>
+  !contractServer || apiBase === contractServer
     ? ''
     : `    <p class="spec-notice">
       Стенд поднят на <code>${apiBase}</code>. В скачанном
-      <code>openapi.yaml</code> поле <code>servers</code> осталось прежним —
-      <code>${DEFAULT_API_BASE}</code>: контракт описывает API, а не ваш стенд.
+      <code>openapi.yaml</code> поле <code>servers</code> указывает на
+      <code>${contractServer}</code>: контракт описывает API, а не ваш стенд.
       При импорте в Postman или генератор клиента подставьте адрес выше.
     </p>
 `
 
-const layout = ({ title, nav, body, wide = false }) => `<!doctype html>
+const layout = ({ title, nav, body, notice = '', wide = false }) => `<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
@@ -115,13 +118,14 @@ const layout = ({ title, nav, body, wide = false }) => `<!doctype html>
       <span class="site-title">Идемпотентный платёжный сервис</span>
       <nav>${nav}</nav>
     </header>
-${specNotice}${body}
+${notice}${body}
   </body>
 </html>
 `
 
-const referencePage = () =>
+const referencePage = (notice) =>
   layout({
+    notice,
     title: 'Документация API — идемпотентный платёжный сервис',
     nav: `
         <a href="./index.html" class="current">Справочник API</a>
@@ -163,8 +167,9 @@ const referencePage = () =>
     </script>`,
   })
 
-const scenariosPage = (html) =>
+const scenariosPage = (html, notice) =>
   layout({
+    notice,
     title: 'Сценарии curl — идемпотентный платёжный сервис',
     nav: `
         <a href="./index.html">Справочник API</a>
@@ -179,6 +184,10 @@ async function build() {
   const raw = await readFile(specPath, 'utf8')
   const spec = parse(raw)
   const { operations, codes } = checkContract(spec, raw)
+
+  // Адрес из самого контракта — с ним и сравнивается адрес стенда.
+  const contractServer = (spec.servers?.[0]?.url ?? '').replace(/\/+$/, '')
+  const notice = specNotice(contractServer)
 
   await rm(outDir, { recursive: true, force: true })
   await mkdir(outDir, { recursive: true })
@@ -207,7 +216,7 @@ async function build() {
     )
   }
 
-  await writeFile(resolve(outDir, 'index.html'), referencePage())
+  await writeFile(resolve(outDir, 'index.html'), referencePage(notice))
 
   // Адрес в примерах подставляется на сборке. В исходнике сценариев стоит
   // адрес по умолчанию — файл читается сам по себе, без плейсхолдеров, — а на
@@ -218,12 +227,15 @@ async function build() {
   )
   await writeFile(
     resolve(outDir, 'scenarios.html'),
-    scenariosPage(marked.parse(scenarios, { async: false })),
+    scenariosPage(marked.parse(scenarios, { async: false }), notice),
   )
 
   console.log(`Контракт: ${specPath}`)
   console.log(
     `Адрес API на странице: ${apiBase}${apiBase === DEFAULT_API_BASE ? ' (по умолчанию)' : ' (из API_BASE)'}`,
+  )
+  console.log(
+    `Адрес в контракте: ${contractServer || '—'}${notice ? ' — расходится, предупреждение показано' : ' — совпадает'}`,
   )
   console.log(
     `Операций: ${operations.length} — ${operations.map((o) => `${o.method} ${o.path}`).join(', ')}`,

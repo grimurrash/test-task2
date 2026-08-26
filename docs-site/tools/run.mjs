@@ -4,11 +4,9 @@
 //
 //   node tools/run.mjs first.txt
 //   node tools/run.mjs second.txt
-//   node tools/compare.mjs first.txt second.txt
 //
-// Два прогона — не перестраховка: пример, отвечающий во втором проходе не тем,
-// что обещает страница, сломан, даже если в первом он зелёный. Один проход
-// по свежему стенду этого не различает.
+// Дальше — tools/verify.mjs: он сверяет ответы с обещанием страницы и заодно
+// сравнивает проходы между собой.
 
 import { readFile, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
@@ -20,7 +18,9 @@ const outDir = resolve(here, '..', process.env.OUT ?? 'dist')
 const outName = process.argv[2] ?? 'run-output.txt'
 
 const blocks = JSON.parse(await readFile(resolve(outDir, 'blocks.json'), 'utf8'))
-const script = blocks.map((b, i) => `echo "===== БЛОК ${i} ====="\n${b}\necho`).join('\n')
+const script = blocks
+  .map((b, i) => `echo "===== БЛОК ${i} ====="\n${b.code}\necho`)
+  .join('\n')
 
 const shell = spawn('bash', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] })
 let out = ''
