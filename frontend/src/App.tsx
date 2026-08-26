@@ -438,12 +438,12 @@ export default function App() {
         </section>
         <section className="card" aria-label="Журнал обмена">
           <div className="card-title">Журнал обмена</div>
-          <CardBoundary label="Журнал обмена">
+          <CardBoundary label="Журнал обмена" resetKey={items}>
             <Journal items={items} />
           </CardBoundary>
         </section>
         <aside className="card" aria-label="Платежи">
-          <CardBoundary label="Список платежей">
+          <CardBoundary label="Список платежей" resetKey={payments}>
             <PaymentsList merchant={merchant} payments={payments} note={listNote} />
           </CardBoundary>
         </aside>

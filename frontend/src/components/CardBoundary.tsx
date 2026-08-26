@@ -13,13 +13,24 @@ import type { ErrorInfo, ReactNode } from 'react'
 // и попадает в консольный захват ломателя. Дальше консоли причина не живёт:
 // в журнал обмена песочницы не пишется (он про сеть, не про рендер) и
 // закрытие вкладки не переживает.
-export class CardBoundary extends Component<
-  { label: string; children: ReactNode },
-  { error: string | null }
-> {
-  state = { error: null as string | null }
+//
+// resetKey (#120, п. 2): при смене ключа заглушка сбрасывается и рендер
+// пробуется заново — упавшая один раз карточка не остаётся заглушкой после
+// того, как данные пришли в порядке. Без ключа граница залипает до размонтирования.
+type Props = { label: string; resetKey?: unknown; children: ReactNode }
+type State = { error: string | null; lastResetKey: unknown }
 
-  static getDerivedStateFromError(e: unknown) {
+export class CardBoundary extends Component<Props, State> {
+  state: State = { error: null, lastResetKey: this.props.resetKey }
+
+  static getDerivedStateFromProps(props: Props, state: State): Partial<State> | null {
+    if (!Object.is(props.resetKey, state.lastResetKey)) {
+      return { error: null, lastResetKey: props.resetKey }
+    }
+    return null
+  }
+
+  static getDerivedStateFromError(e: unknown): Partial<State> {
     return { error: e instanceof Error ? e.message : String(e) }
   }
 
