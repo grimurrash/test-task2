@@ -98,6 +98,33 @@ function Entry({ entry }: { entry: JournalEntry }) {
   )
 }
 
+// Группа — отдельный компонент по той же причине, что PaymentCard (#120, п. 1):
+// шапка (label, note, чип ключа, класс семантики) должна рисоваться ПОД границей,
+// а не в рендере Journal — иначе плохие данные группы заменяют заглушкой весь
+// журнал. Третье повторение одной формы за вечер: родитель вычисляет для
+// потомка — значит, узел проверяется карточкой-бомбой, не глазами.
+function Group({ item }: { item: Extract<JournalItem, { kind: 'group' }> }) {
+  return (
+    <div className={`group group--${item.semantic}`}>
+      <div className="group-label">
+        {item.label}
+        {item.groupKey && (
+          <>
+            {' '}
+            <KeyChip value={item.groupKey} />
+          </>
+        )}
+      </div>
+      {item.note && <p className="note">{item.note}</p>}
+      {item.entries.map((e) => (
+        <CardBoundary key={e.uid} label="Фрагмент журнала" resetKey={e}>
+          <Entry entry={e} />
+        </CardBoundary>
+      ))}
+    </div>
+  )
+}
+
 export function Journal(props: { items: JournalItem[] }) {
   if (props.items.length === 0) {
     return <p className="empty">Журнал пуст — отправьте первый запрос.</p>
@@ -106,27 +133,13 @@ export function Journal(props: { items: JournalItem[] }) {
     <div className="timeline">
       {props.items.map((item) =>
         item.kind === 'entry' ? (
-          <CardBoundary key={item.entry.uid} label="Фрагмент журнала">
+          <CardBoundary key={item.entry.uid} label="Фрагмент журнала" resetKey={item.entry}>
             <Entry entry={item.entry} />
           </CardBoundary>
         ) : (
-          <div key={item.uid} className={`group group--${item.semantic}`}>
-            <div className="group-label">
-              {item.label}
-              {item.groupKey && (
-                <>
-                  {' '}
-                  <KeyChip value={item.groupKey} />
-                </>
-              )}
-            </div>
-            {item.note && <p className="note">{item.note}</p>}
-            {item.entries.map((e) => (
-              <CardBoundary key={e.uid} label="Фрагмент журнала">
-                <Entry entry={e} />
-              </CardBoundary>
-            ))}
-          </div>
+          <CardBoundary key={item.uid} label="Группа журнала" resetKey={item}>
+            <Group item={item} />
+          </CardBoundary>
         ),
       )}
     </div>

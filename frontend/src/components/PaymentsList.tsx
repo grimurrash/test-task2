@@ -80,7 +80,12 @@ export function PaymentsList(props: {
         <p className="empty">Платежей пока нет.</p>
       )}
       {props.payments.map((p) => (
-        <CardBoundary key={p.id} label={`Платёж ${p.id}`}>
+        <CardBoundary
+          key={p.id}
+          label={`Платёж ${p.id}`}
+          // сброс заглушки, когда данные платежа изменились (#120, п. 2)
+          resetKey={`${p.amount_minor}|${p.currency}|${p.status}|${p.status_reason}|${p.order_id}|${p.description}`}
+        >
           <PaymentCard p={p} />
         </CardBoundary>
       ))}
