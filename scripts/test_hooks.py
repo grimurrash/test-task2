@@ -60,6 +60,25 @@ CASES = [
     ("guard-git.py", "обычный коммит разрешён",
      {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'add tests'"}}, "allow"),
 
+    # guard-roles: роль определяется каталогом. Сессия внутри .worktrees/<имя> —
+    # исполнитель, всякая другая — координатор. Первые два кейса — пара: одна
+    # и та же команда, разный каталог, разное решение.
+    ("guard-roles.py", "исполнитель не закрывает тикет",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "gh issue close 42 --comment готово"}}, "deny"),
+    ("guard-roles.py", "координатор закрывает тикет",
+     {"tool_name": "Bash", "cwd": ROOT,
+      "tool_input": {"command": "gh issue close 42 --comment готово"}}, "allow"),
+    ("guard-roles.py", "чужая рабочая копия закрыта",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "cat .worktrees/salavat/backend/app.py"}}, "deny"),
+    ("guard-roles.py", "своя рабочая копия открыта",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "cat .worktrees/rustem/backend/app.py"}}, "allow"),
+    ("guard-roles.py", "имя команды в тексте коммита — упоминание",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "git commit -m 'рапорт вместо gh issue close'"}}, "allow"),
+
     ("guard-scope.py", "запись в чужую папку",
      {"tool_name": "Write", "tool_input": {"file_path": HOME + "/Downloads/подмена.md"}}, "deny"),
     ("guard-scope.py", "удаление за пределами репозитория",

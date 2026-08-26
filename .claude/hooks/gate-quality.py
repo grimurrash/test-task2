@@ -26,6 +26,24 @@ issue #33, найдено при работе над #24: verify.json при э�
 `CLAUDE_PROJECT_DIR` — эти два не обязаны совпадать. Верify.json теперь
 читается оттуда же, откуда пишется, и по ключу `session_id`: чужой прогон
 тестов (другая параллельная роль) в свою запись больше не попадает.
+
+issue #65: «код правился» больше не выводится из mtime дерева. Обход брал
+самый свежий исходник во всём рабочем дереве, а дерево включает чужие копии
+в `.worktrees/*` — из 555 сторожёных файлов 487 принадлежали соседним
+сессиям, вместе с собранным dist и чужим node_modules. Сессия, не тронувшая
+ни строки, получала требование прогона; в схеме из двух ролей его получал бы
+координатор на каждом завершении, хотя кода он не пишет вовсе.
+
+Признак теперь — событие ЭТОЙ сессии: `edited` в её записи verify.json,
+которое ставит mark-verify.py на правку инструментом или на команду
+с намерением записи в исходник. Требование прогона от этого не ослабло:
+правка без прогона блокирует, прогон до правки блокирует, красный прогон
+блокирует независимо от правок. Что ушло — это блокировка за чужую работу
+и за факт существования исходников в репозитории.
+
+Незакоммиченные изменения по-прежнему считаются по рабочему дереву: правку,
+сделанную мимо инструментов сессии (руками, сторонним процессом), ловит
+именно она.
 """
 import hashlib
 import json
@@ -37,7 +55,6 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
 
-SOURCE_SKIP = (".claude/logs", ".claude/state", ".git", "node_modules", "vendor")
 COOLDOWN = 600
 
 def git(root, *args):
@@ -47,24 +64,6 @@ def git(root, *args):
         return out.stdout.strip()
     except Exception:
         return ""
-
-def newest_source_mtime(root):
-    newest = 0.0
-    for dirpath, dirnames, filenames in os.walk(root):
-        rel = os.path.relpath(dirpath, root)
-        if any(rel == s or rel.startswith(s) for s in SOURCE_SKIP):
-            dirnames[:] = []
-            continue
-        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "vendor", "__pycache__")]
-        for name in filenames:
-            if os.path.splitext(name)[1].lower() not in (
-                    ".py", ".js", ".ts", ".tsx", ".php", ".go", ".rs", ".java", ".kt", ".sh"):
-                continue
-            try:
-                newest = max(newest, os.path.getmtime(os.path.join(dirpath, name)))
-            except OSError:
-                pass
-    return newest
 
 def main():
     data = H.read_input()
@@ -93,15 +92,18 @@ def main():
         pass
     session_state = state.get("sessions", {}).get(session_id, {})
 
-    code_ts = newest_source_mtime(root)
     tests = session_state.get("tests")
-    if code_ts > 0:
+    edited = session_state.get("edited")
+    if tests and tests.get("failed"):
+        # Красный прогон блокирует сам по себе, правил ли кто-то код или нет:
+        # сессия своими руками получила красное и объявляет работу законченной.
+        problems.append("последний прогон тестов был красным: %s" % tests.get("command"))
+    elif edited:
         if not tests:
-            problems.append("тесты в этой сессии не запускались ни разу")
-        elif tests.get("ts", 0) < code_ts:
+            problems.append("код правился в этой сессии (%s), тесты не запускались ни разу"
+                            % edited.get("path"))
+        elif tests.get("ts", 0) < edited.get("ts", 0):
             problems.append("код правился после последнего прогона тестов (%s)" % tests.get("human_ts"))
-        elif tests.get("failed"):
-            problems.append("последний прогон тестов был красным: %s" % tests.get("command"))
 
     static = session_state.get("static")
     if static and static.get("failed"):

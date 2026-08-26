@@ -10,6 +10,14 @@ issue #24). Раньше плоские ключи tests/static/scan затир�
 прогоном: сессия A видела «тесты красные», хотя красным был прогон сессии B.
 Теперь запись — под ключом session_id внутри verify.json, а не поверх
 общих ключей; читает её тем же ключом gate-quality.py.
+
+issue #65: здесь же фиксируется вторая половина факта — правка кода. Раньше
+её выводил gate-quality из mtime самого свежего исходника во всём рабочем
+дереве, а дерево включает чужие копии в .worktrees/*: из 555 сторожёных
+файлов 487 принадлежали соседним сессиям. Сессия, не тронувшая ни строки,
+получала требование прогона; координатор, который кода не пишет вовсе, —
+на каждом завершении. Признак «код правился» стал событием этой сессии:
+правка инструментом или команда с намерением записи в исходник.
 """
 import json
 import os
@@ -19,6 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
+from _paths import WRITE_INTENT, path_candidates
 
 KINDS = [
     (r"\b(?:pytest|phpunit|pest|vitest|jest|mocha|go\s+test|cargo\s+test)\b", "tests"),
@@ -38,13 +47,47 @@ KINDS = [
 # ограничений.
 SESSION_TTL = 7 * 24 * 3600
 
+# Что считается кодом. Список тот же, каким его знал gate-quality, когда сам
+# обходил дерево: тесты требуются за правку исходника, а не за правку текста.
+# Расширять его молча нельзя — каждое новое расширение это новое требование
+# прогона к каждой сессии, которая такой файл тронет.
+SOURCE_EXT = (".py", ".js", ".ts", ".tsx", ".php", ".go", ".rs", ".java", ".kt", ".sh")
+
+def is_source(path):
+    return bool(path) and os.path.splitext(path)[1].lower() in SOURCE_EXT
+
+def edited_source(data):
+    """Путь исходника, который эта сессия правила прямо сейчас, или None.
+
+    Два способа, потому что править код можно двумя: инструментом правки
+    и командой. Для команды одного упоминания пути мало — нужен признак
+    намерения записи, иначе `grep -n token backend/app.py` стал бы «правкой»
+    и потребовал прогона тестов. Это ровно тот класс ложных отказов, который
+    разобран в _paths: признак принимается за свойство, упоминание — за
+    использование.
+    """
+    tool = data.get("tool_name") or ""
+    tool_input = data.get("tool_input") or {}
+
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        return path if is_source(path) else None
+
+    if tool == "Bash":
+        cmd = tool_input.get("command") or ""
+        if not cmd or not WRITE_INTENT.search(cmd):
+            return None
+        for candidate in path_candidates(cmd):
+            if is_source(candidate):
+                return candidate
+    return None
+
 def main():
     data = H.read_input()
     cmd = (data.get("tool_input") or {}).get("command") or ""
-    if not cmd:
-        sys.exit(0)
-    kinds = {kind for pattern, kind in KINDS if re.search(pattern, cmd, re.I)}
-    if not kinds:
+    kinds = {kind for pattern, kind in KINDS if re.search(pattern, cmd, re.I)} if cmd else set()
+    edited = edited_source(data)
+    if not kinds and not edited:
         sys.exit(0)
 
     resp = data.get("tool_response")
@@ -76,20 +119,32 @@ def main():
         r"|✗"                      # собственные проверки репозитория
         r"|ПРОВАЛОВ:\s*[1-9]"      # scripts/test_hooks.py
     )
+    # Провал ПРАВКИ — только код возврата инструмента, без разбора текста.
+    # Маркеры выше читают отчёт прогонщика; в ответе правки на их месте лежит
+    # содержимое файла, и правка теста, где написано «✗», иначе считалась бы
+    # неудавшейся — то есть код правился, а требование прогона не выставлялось.
+    # Ошибка в тихую сторону, худшую из двух.
+    edit_failed = bool(resp.get("is_error")) if isinstance(resp, dict) else False
     if re.search(FAILURE_MARKERS, tail[-4000:]):
         failed = True
 
     session_id = data.get("session_id") or "unknown"
     now = time.time()
+    human = time.strftime("%Y-%m-%d %H:%M:%S")
     record = {
         kind: {
             "ts": now,
-            "human_ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "human_ts": human,
             "command": cmd[:300],
             "failed": failed,
         }
         for kind in kinds
     }
+    # Правка, которая не удалась, правкой не считается: инструмент вернул
+    # ошибку, файл остался прежним, и требовать за него прогон — та же ложная
+    # тревога, только с другой стороны.
+    if edited and not edit_failed:
+        record["edited"] = {"ts": now, "human_ts": human, "path": edited[:300]}
 
     def mutate(state):
         # Плоский формат до issue #33 (ключи tests/static/scan прямо на

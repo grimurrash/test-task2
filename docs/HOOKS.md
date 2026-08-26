@@ -5,7 +5,7 @@
 словесный запрет действует ровно до первого текста, который окажется убедительнее.
 
 Поэтому здесь правила живут не в прозе, а в коде. Всё, что описано ниже, проверено
-запуском: `python3 scripts/test_hooks.py` — 27 проверок.
+запуском: `python3 scripts/test_hooks.py` — 235 проверок.
 
 ## Что стоит
 
@@ -15,9 +15,10 @@
 | `guard-git.py` | PreToolUse: Bash | Блокирует force-push, `--no-verify`, `filter-branch`, удаление защищённых веток. Отказывает без пропуска на push в защищённую ветку — по имени в тексте команды **и** по факту (HEAD рабочего дерева, где выполнится push), `reset --hard`, `clean -f`, создание ветки вне соглашения, worktree |
 | `guard-scope.py` | PreToolUse: Bash, Write, Edit | Блокирует запись и удаление за пределами репозитория. Граница — общий корень с любым linked worktree (`git rev-parse --git-common-dir`), не то, что случайно лежит в `CLAUDE_PROJECT_DIR` |
 | `guard-protected-files.py` | PreToolUse: Bash, Write, Edit | Отказывает в правке `.claude/`, `.github/workflows/`, `CLAUDE.md`, `scripts/unlock.sh` — и файловыми инструментами, и командой (`sed -i`, перенаправление, встроенный код). Разрешение — только пропуск. Корень — тот же общий, что у `guard-scope.py` |
+| `guard-roles.py` | PreToolUse: Bash | Границы между координатором и исполнителями. Роль определяется каталогом: сессия внутри `.worktrees/<имя>` — исполнитель. Отказывает ему в `gh issue close` (тикет закрывает координатор) и в обращении к чужой рабочей копии |
 | `scan-untrusted.py` | PostToolUse: Read, WebFetch, WebSearch, Bash (только `gh issue view/list/comment`, `gh pr view`, `curl`, `wget`) | Ищет скрытые инструкции в прочитанном и называет их вслух |
-| `mark-verify.py` | PostToolUse: Bash | Фиксирует факт прогона тестов и анализаторов. Запись — под ключом `session_id` в общем `verify.json`, под блокировкой (`_hooklib.update_json_state`) |
-| `gate-quality.py` | Stop | Не даёт закрыть сессию с незакоммиченным кодом или без прогона тестов. Признаёт репозиторием и linked worktree (`.git` там — файл, не папка). Читает `verify.json` по своему `session_id`, не по чужому |
+| `mark-verify.py` | PostToolUse: Bash, Write, Edit | Фиксирует два факта сессии: прогон тестов и анализаторов — и правку кода (инструментом или командой с намерением записи в исходник). Запись — под ключом `session_id` в общем `verify.json`, под блокировкой (`_hooklib.update_json_state`) |
+| `gate-quality.py` | Stop | Не даёт закрыть сессию с незакоммиченным кодом или без прогона тестов. Прогон требуется от сессии, которая правила код: признак — событие `edited` в её записи, а не mtime дерева, куда попадали чужие копии из `.worktrees/*` (issue #65). Признаёт репозиторием и linked worktree (`.git` там — файл, не папка). Читает `verify.json` по своему `session_id`, не по чужому |
 | `session-start.sh` | SessionStart | Печатает приоритет инструкций, проверяет целость обвязки, линтует `CLAUDE.md` |
 
 ## Почему не хватило permissions
