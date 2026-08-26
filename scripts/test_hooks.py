@@ -1203,6 +1203,24 @@ def _main():
         ("прогон собственных тестов репозитория зафиксирован", "python3 scripts/test_hooks.py"),
         ("прогон unittest зафиксирован", "python3 -m unittest discover -s tests"),
     ]
+    # Обратная сторона тех же трёх строк: имя прогонщика, ПРОЦИТИРОВАННОЕ
+    # в теле heredoc, прогоном не является. Без вырезания тел сообщение
+    # коммита «прогон: python3 scripts/test_hooks.py — 235 проверок»
+    # отмечалось как настоящий прогон, и гейт считал сессию проверенной —
+    # механизм не мешал, а врал. Поймано на себе 2026-08-26.
+    quoted = "git commit -F - <<'MSG'\nпрогон: python3 scripts/test_hooks.py\nMSG"
+    if os.path.exists(state_path):
+        os.remove(state_path)
+    run("mark-verify.py", {"tool_name": "Bash", "tool_input": {"command": quoted},
+                           "tool_response": {"stdout": "", "is_error": False}})
+    marked = False
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as fh:
+            marked = "tests" in json.load(fh).get("sessions", {}).get("unknown", {})
+    failures += 0 if not marked else 1
+    print("    %s имя прогонщика в теле heredoc прогоном не считается"
+          % ("✓" if not marked else "✗"))
+
     for title, cmd in verify_cases:
         if os.path.exists(state_path):
             os.remove(state_path)
@@ -1294,6 +1312,18 @@ def _main():
         ("чтение исходника командой правкой не считается",
          {"tool_name": "Bash", "tool_input": {"command": "grep -n token backend/app.py"},
           "tool_response": {"stdout": "12: token", "is_error": False}}, False),
+        # Оба случая ниже — настоящие команды этой сессии, на которых механизм
+        # соврал в первый же день. Признак принят за свойство: символ `>`
+        # внутри искомой подстроки принят за перенаправление, а путь запускаемого
+        # файла — за путь правимого.
+        ("запуск скрипта правкой не считается",
+         {"tool_name": "Bash",
+          "tool_input": {"command": "python3 .claude/hooks/lint-claude-md.py && grep -rn '<Имя>' docs"},
+          "tool_response": {"stdout": "ok", "is_error": False}}, False),
+        ("правка исходника рядом с запуском другого — записана",
+         {"tool_name": "Bash",
+          "tool_input": {"command": "python3 scripts/test_hooks.py; sed -i '' 's/a/b/' backend/app.py"},
+          "tool_response": {"stdout": "ok", "is_error": False}}, True),
     ]
     for title, payload, expected in edit_cases:
         if os.path.exists(state_path):

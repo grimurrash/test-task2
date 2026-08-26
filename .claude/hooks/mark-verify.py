@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
-from _paths import WRITE_INTENT, path_candidates
+from _paths import WRITE_INTENT, path_candidates, strip_heredocs, tokenize
 
 KINDS = [
     (r"\b(?:pytest|phpunit|pest|vitest|jest|mocha|go\s+test|cargo\s+test)\b", "tests"),
@@ -53,8 +53,37 @@ SESSION_TTL = 7 * 24 * 3600
 # прогона к каждой сессии, которая такой файл тронет.
 SOURCE_EXT = (".py", ".js", ".ts", ".tsx", ".php", ".go", ".rs", ".java", ".kt", ".sh")
 
+# Интерпретаторы: путь сразу после них — то, что ЗАПУСКАЮТ, а не то, что
+# правят. Без этого различения `python3 .claude/hooks/lint-claude-md.py`
+# считался правкой хука, стоило в той же строке оказаться символу `>`
+# (например, внутри искомой подстроки `'<Имя>'`): признак намерения записи
+# срабатывал на тексте, а путь исходника уже лежал среди кандидатов.
+# Поймано на этой же сессии, своим же механизмом.
+INTERPRETERS = ("python", "python2", "python3", "bash", "sh", "zsh", "node",
+                "ruby", "perl", "php", "deno", "bun")
+
 def is_source(path):
     return bool(path) and os.path.splitext(path)[1].lower() in SOURCE_EXT
+
+def launched_paths(command):
+    """Пути, которые команда запускает: аргумент сразу после интерпретатора.
+
+    Флаги между интерпретатором и файлом пропускаются (`python3 -u x.py`),
+    но `-c`/`-e` прерывают разбор: дальше идёт код, а не имя файла.
+    """
+    tokens = tokenize(command)
+    out = set()
+    for i, token in enumerate(tokens):
+        if os.path.basename(token) not in INTERPRETERS:
+            continue
+        for nxt in tokens[i + 1:]:
+            if nxt in ("-c", "-e", "-r"):
+                break
+            if nxt.startswith("-"):
+                continue
+            out.add(nxt)
+            break
+    return out
 
 def edited_source(data):
     """Путь исходника, который эта сессия правила прямо сейчас, или None.
@@ -74,18 +103,25 @@ def edited_source(data):
         return path if is_source(path) else None
 
     if tool == "Bash":
-        cmd = tool_input.get("command") or ""
+        cmd = strip_heredocs(tool_input.get("command") or "")
         if not cmd or not WRITE_INTENT.search(cmd):
             return None
+        launched = launched_paths(cmd)
         for candidate in path_candidates(cmd):
-            if is_source(candidate):
+            if is_source(candidate) and candidate not in launched:
                 return candidate
     return None
 
 def main():
     data = H.read_input()
     cmd = (data.get("tool_input") or {}).get("command") or ""
-    kinds = {kind for pattern, kind in KINDS if re.search(pattern, cmd, re.I)} if cmd else set()
+    # Тело heredoc — данные, а не команда. Без вырезания сообщение коммита,
+    # в котором написано «прогон: python3 scripts/test_hooks.py», отмечалось
+    # как настоящий прогон тестов, и гейт после этого считал сессию проверенной.
+    # Ошибка в тихую сторону: механизм не мешает, а врёт. Поймано на себе же —
+    # отметка о прогоне встала на команду `git commit -F - <<'MSG'`.
+    executed = strip_heredocs(cmd)
+    kinds = {kind for pattern, kind in KINDS if re.search(pattern, executed, re.I)} if executed else set()
     edited = edited_source(data)
     if not kinds and not edited:
         sys.exit(0)
