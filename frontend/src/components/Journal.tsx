@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import type { JournalEntry, JournalItem } from '../types'
 import { shortKey } from '../lib/semantics'
 import { keyDotColor } from '../lib/keyhue'
+import { CardBoundary } from './CardBoundary'
 
 function KeyChip({ value }: { value: string }) {
   return (
@@ -105,7 +106,9 @@ export function Journal(props: { items: JournalItem[] }) {
     <div className="timeline">
       {props.items.map((item) =>
         item.kind === 'entry' ? (
-          <Entry key={item.entry.uid} entry={item.entry} />
+          <CardBoundary key={item.entry.uid} label="Фрагмент журнала">
+            <Entry entry={item.entry} />
+          </CardBoundary>
         ) : (
           <div key={item.uid} className={`group group--${item.semantic}`}>
             <div className="group-label">
@@ -119,7 +122,9 @@ export function Journal(props: { items: JournalItem[] }) {
             </div>
             {item.note && <p className="note">{item.note}</p>}
             {item.entries.map((e) => (
-              <Entry key={e.uid} entry={e} />
+              <CardBoundary key={e.uid} label="Фрагмент журнала">
+                <Entry entry={e} />
+              </CardBoundary>
             ))}
           </div>
         ),

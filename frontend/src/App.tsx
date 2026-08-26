@@ -10,6 +10,7 @@ import type { FormState } from './components/RequestForm'
 import { Scenarios } from './components/Scenarios'
 import { Journal } from './components/Journal'
 import { PaymentsList } from './components/PaymentsList'
+import { CardBoundary } from './components/CardBoundary'
 
 export const MERCHANTS = ['demo-shop-a', 'demo-shop-b'] as const
 export type Merchant = (typeof MERCHANTS)[number]
@@ -437,10 +438,14 @@ export default function App() {
         </section>
         <section className="card" aria-label="Журнал обмена">
           <div className="card-title">Журнал обмена</div>
-          <Journal items={items} />
+          <CardBoundary label="Журнал обмена">
+            <Journal items={items} />
+          </CardBoundary>
         </section>
         <aside className="card" aria-label="Платежи">
-          <PaymentsList merchant={merchant} payments={payments} note={listNote} />
+          <CardBoundary label="Список платежей">
+            <PaymentsList merchant={merchant} payments={payments} note={listNote} />
+          </CardBoundary>
         </aside>
       </div>
     </div>
