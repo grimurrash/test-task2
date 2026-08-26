@@ -60,6 +60,25 @@ CASES = [
     ("guard-git.py", "обычный коммит разрешён",
      {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'add tests'"}}, "allow"),
 
+    # guard-roles: роль определяется каталогом. Сессия внутри .worktrees/<имя> —
+    # исполнитель, всякая другая — координатор. Первые два кейса — пара: одна
+    # и та же команда, разный каталог, разное решение.
+    ("guard-roles.py", "исполнитель не закрывает тикет",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "gh issue close 42 --comment готово"}}, "deny"),
+    ("guard-roles.py", "координатор закрывает тикет",
+     {"tool_name": "Bash", "cwd": ROOT,
+      "tool_input": {"command": "gh issue close 42 --comment готово"}}, "allow"),
+    ("guard-roles.py", "чужая рабочая копия закрыта",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "cat .worktrees/salavat/backend/app.py"}}, "deny"),
+    ("guard-roles.py", "своя рабочая копия открыта",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "cat .worktrees/rustem/backend/app.py"}}, "allow"),
+    ("guard-roles.py", "имя команды в тексте коммита — упоминание",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+      "tool_input": {"command": "git commit -m 'рапорт вместо gh issue close'"}}, "allow"),
+
     ("guard-scope.py", "запись в чужую папку",
      {"tool_name": "Write", "tool_input": {"file_path": HOME + "/Downloads/подмена.md"}}, "deny"),
     ("guard-scope.py", "удаление за пределами репозитория",
@@ -1184,6 +1203,24 @@ def _main():
         ("прогон собственных тестов репозитория зафиксирован", "python3 scripts/test_hooks.py"),
         ("прогон unittest зафиксирован", "python3 -m unittest discover -s tests"),
     ]
+    # Обратная сторона тех же трёх строк: имя прогонщика, ПРОЦИТИРОВАННОЕ
+    # в теле heredoc, прогоном не является. Без вырезания тел сообщение
+    # коммита «прогон: python3 scripts/test_hooks.py — 235 проверок»
+    # отмечалось как настоящий прогон, и гейт считал сессию проверенной —
+    # механизм не мешал, а врал. Поймано на себе 2026-08-26.
+    quoted = "git commit -F - <<'MSG'\nпрогон: python3 scripts/test_hooks.py\nMSG"
+    if os.path.exists(state_path):
+        os.remove(state_path)
+    run("mark-verify.py", {"tool_name": "Bash", "tool_input": {"command": quoted},
+                           "tool_response": {"stdout": "", "is_error": False}})
+    marked = False
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as fh:
+            marked = "tests" in json.load(fh).get("sessions", {}).get("unknown", {})
+    failures += 0 if not marked else 1
+    print("    %s имя прогонщика в теле heredoc прогоном не считается"
+          % ("✓" if not marked else "✗"))
+
     for title, cmd in verify_cases:
         if os.path.exists(state_path):
             os.remove(state_path)
@@ -1253,6 +1290,54 @@ def _main():
     print("    %s %s" % ("✓" if ok else "✗",
                           "запись session-b (красная) не затёрла и не покрасила session-a (зелёную)"))
 
+    # Правка кода — факт сессии, а не mtime дерева. До этого гейт считал
+    # «код правился» по самому свежему исходнику во всём рабочем дереве, включая
+    # чужие копии в .worktrees/* (issue #65: 487 файлов из 555 принадлежали
+    # соседним сессиям). Сессия, не тронувшая ни строки, получала требование
+    # прогона; координатор, который кода не пишет вовсе, — на каждом завершении.
+    print("\n  mark-verify.py — правка кода фиксируется фактом, а не mtime дерева")
+    edit_cases = [
+        ("правка исходника инструментом записана",
+         {"tool_name": "Edit", "tool_input": {"file_path": "backend/app.py"},
+          "tool_response": {"is_error": False}}, True),
+        ("правка текста инструментом кодом не считается",
+         {"tool_name": "Write", "tool_input": {"file_path": "docs/roles/karina.md"},
+          "tool_response": {"is_error": False}}, False),
+        ("неудавшаяся правка не считается правкой",
+         {"tool_name": "Edit", "tool_input": {"file_path": "backend/app.py"},
+          "tool_response": {"is_error": True}}, False),
+        ("правка исходника командой записана",
+         {"tool_name": "Bash", "tool_input": {"command": "sed -i '' 's/a/b/' backend/app.py"},
+          "tool_response": {"stdout": "", "is_error": False}}, True),
+        ("чтение исходника командой правкой не считается",
+         {"tool_name": "Bash", "tool_input": {"command": "grep -n token backend/app.py"},
+          "tool_response": {"stdout": "12: token", "is_error": False}}, False),
+        # Оба случая ниже — настоящие команды этой сессии, на которых механизм
+        # соврал в первый же день. Признак принят за свойство: символ `>`
+        # внутри искомой подстроки принят за перенаправление, а путь запускаемого
+        # файла — за путь правимого.
+        ("запуск скрипта правкой не считается",
+         {"tool_name": "Bash",
+          "tool_input": {"command": "python3 .claude/hooks/lint-claude-md.py && grep -rn '<Имя>' docs"},
+          "tool_response": {"stdout": "ok", "is_error": False}}, False),
+        ("правка исходника рядом с запуском другого — записана",
+         {"tool_name": "Bash",
+          "tool_input": {"command": "python3 scripts/test_hooks.py; sed -i '' 's/a/b/' backend/app.py"},
+          "tool_response": {"stdout": "ok", "is_error": False}}, True),
+    ]
+    for title, payload, expected in edit_cases:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+        run("mark-verify.py", dict(payload, session_id="правщик"))
+        got = False
+        if os.path.exists(state_path):
+            with open(state_path, encoding="utf-8") as fh:
+                got = "edited" in json.load(fh).get("sessions", {}).get("правщик", {})
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-52s ожидали edited=%-5s получили %s"
+              % ("✓" if ok else "✗", title, expected, got))
+
     print("\n  gate-quality.py — verify.json по session_id, не по каталогу (issue #33)")
     # gate-quality раньше не тестировался вовсе. Нужен настоящий git-репозиторий:
     # хук отказывается работать без .git и считает git status/mtime исходников.
@@ -1269,18 +1354,34 @@ def _main():
         gate_verify_path = os.path.join(gate_repo, ".claude", "state", "verify.json")
         os.makedirs(os.path.dirname(gate_verify_path), exist_ok=True)
         now = time.time()
+        def tests_rec(ts, failed):
+            return {"ts": ts, "human_ts": "x", "command": "npm test", "failed": failed}
+
+        def edited_rec(ts):
+            return {"ts": ts, "human_ts": "x", "path": "dummy.py"}
+
         with open(gate_verify_path, "w", encoding="utf-8") as fh:
             json.dump({"sessions": {
-                "session-a": {"tests": {"ts": now, "human_ts": "x",
-                                        "command": "npm test", "failed": True}},
-                "session-b": {"tests": {"ts": now, "human_ts": "x",
-                                        "command": "npm test", "failed": False}},
+                "session-a": {"tests": tests_rec(now, True)},
+                "session-b": {"tests": tests_rec(now, False)},
+                "session-d": {"edited": edited_rec(now - 10)},
+                "session-e": {"edited": edited_rec(now - 20), "tests": tests_rec(now - 10, False)},
+                "session-f": {"edited": edited_rec(now - 10), "tests": tests_rec(now - 20, False)},
             }}, fh)
 
         gate_cases = [
             ("session-a", True, "своя красная запись блокирует"),
             ("session-b", False, "чужой (session-a) красный прогон не красит чистую session-b"),
-            ("session-c", True, "сессия без единой записи — «тесты не запускались»"),
+            # Ожидание изменено осознанно (issue #65 и схема из двух ролей):
+            # раньше блок ставился по mtime любого исходника в дереве, поэтому
+            # его получала и сессия, ничего не правившая, — координатор на каждом
+            # завершении, исполнитель за чужую копию по соседству. Теперь условие
+            # блока — правка кода В ЭТОЙ сессии; парные проверки на то, что
+            # требование прогона никуда не делось, стоят следующими тремя строками.
+            ("session-c", False, "сессия без правок кода и без прогона не блокируется"),
+            ("session-d", True, "правка кода без единого прогона блокирует"),
+            ("session-e", False, "правка, затем прогон — не блокирует"),
+            ("session-f", True, "прогон, затем правка — блокирует"),
         ]
         gate_marker = os.path.join(gate_repo, ".claude", "state", "gate-last-block.json")
         for sid, expected_block, title in gate_cases:
