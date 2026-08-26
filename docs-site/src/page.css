@@ -53,10 +53,32 @@ body {
   border-bottom-color: var(--page-accent);
 }
 
+/* Предупреждение о расхождении адресов: появляется только на стенде
+   с нестандартным портом, поэтому места «про запас» под него не держим. */
+.spec-notice {
+  margin: 0;
+  padding: 0.7rem 1.25rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--page-text);
+  background: var(--color-conflict-bg, #fdf2e3);
+  border-bottom: 1px solid var(--color-conflict-border, #f0d5a8);
+}
+
+.spec-notice code {
+  font-family: var(--page-mono);
+  font-size: 0.9em;
+}
+
 /* Справочник занимает остаток экрана и прокручивается сам. */
 body.wide #scalar {
   height: calc(100vh - 49px);
   overflow: auto;
+}
+
+/* С предупреждением шапка выше — справочник ужимается на его высоту. */
+body.wide:has(.spec-notice) #scalar {
+  height: calc(100vh - 49px - 3.4rem);
 }
 
 .prose {

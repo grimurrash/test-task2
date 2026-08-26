@@ -16,19 +16,37 @@ API на `http://localhost:8080` — поднимите его перед про
 
 ```bash
 API=http://localhost:8080
-MERCHANT=demo-shop
+MERCHANT=demo-shop-a
 KEY=$(uuidgen)
 ```
 
-`Idempotency-Key` — любая непустая строка от 1 до 255 символов; `uuidgen` взят
-для удобства, формат контрактом не навязывается. Заголовок `X-Merchant-Id`
-обязателен на **каждом** запросе.
+Адрес здесь — тот, на котором API поднят **у вас**: страница собирается вместе
+со стендом и подставляет его сама. Мерчант `demo-shop-a` выбран не случайно —
+это одно из двух значений переключателя в песочнице, поэтому всё, что вы
+создадите здесь руками, видно там на соседней вкладке.
+
+`Idempotency-Key` — непустая строка от 1 до 255 символов, присланная ровно
+один раз; формат не навязывается, годится любая письменность, `uuidgen` взят
+для удобства. Заголовок `X-Merchant-Id` обязателен на **каждом** запросе,
+тоже присылается один раз и, в отличие от ключа, ограничен набором
+`A–Z a–z 0–9 . _ -`.
+
+**Что можно копировать вразнобой, а что нельзя.** Этот блок выполняется
+первым в любом случае — без него переменные пусты, и ответы придут не те,
+что обещаны. Дальше:
+
+- **шаги 1–5 читаются по порядку**: каждый опирается на платёж, созданный
+  предыдущим, и на общий `$KEY`. Взятый в одиночку шаг 3 вернёт не 409,
+  а 201 — конфликтовать ему будет не с чем;
+- **раздел «Отказы» и суммы-триггеры самостоятельны**: каждый блок там
+  создаёт всё, что ему нужно, и не зависит от соседей.
 
 ## 1. Создание платежа → 201
 
 Первый запрос с этим ключом создаёт платёж и отвечает **201**.
 
 ```bash
+# ожидается 201
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -54,6 +72,7 @@ echo "$PAYMENT_ID"
 совпадают и `id`, и `created_at`. Второй платёж не создан.
 
 ```bash
+# ожидается 200
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -69,6 +88,7 @@ curl -i -X POST "$API/v1/payments" \
 Ключ уже занят другим запросом. Существующий платёж при этом **не меняется**.
 
 ```bash
+# ожидается 409
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -84,6 +104,7 @@ curl -i -X POST "$API/v1/payments" \
 ## 4. Статус платежа → 200
 
 ```bash
+# ожидается 200
 curl -i "$API/v1/payments/$PAYMENT_ID" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -92,6 +113,7 @@ curl -i "$API/v1/payments/$PAYMENT_ID" \
 `payment_not_found`:
 
 ```bash
+# ожидается 404
 curl -i "$API/v1/payments/$PAYMENT_ID" \
   -H "X-Merchant-Id: other-shop"
 ```
@@ -101,6 +123,7 @@ curl -i "$API/v1/payments/$PAYMENT_ID" \
 Отмена переводит платёж из `pending` в `canceled`.
 
 ```bash
+# ожидается 200
 curl -i -X POST "$API/v1/payments/$PAYMENT_ID/cancel" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -117,6 +140,7 @@ DONE_ID=$(curl -s -X POST "$API/v1/payments" \
   -d '{"amount_minor":150002,"currency":"RUB","order_id":"order-2026-0825-0003"}' \
   | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 
+# ожидается 409
 curl -i -X POST "$API/v1/payments/$DONE_ID/cancel" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -124,6 +148,7 @@ curl -i -X POST "$API/v1/payments/$DONE_ID/cancel" \
 ## Список платежей — от повторов не растёт
 
 ```bash
+# ожидается 200
 curl -i "$API/v1/payments" \
   -H "X-Merchant-Id: $MERCHANT"
 ```
@@ -137,30 +162,72 @@ curl -i "$API/v1/payments" \
 слои, и коды у них разные. Порядок проверок фиксирован, ответ приходит от
 первого непройденного слоя:
 
-`X-Merchant-Id` → `Idempotency-Key` → разбор тела → валидация полей.
+маршрут → `X-Merchant-Id` → `Idempotency-Key` → разбор тела → валидация полей.
 
-Поэтому запрос, у которого сломано сразу всё, ответит про заголовок, а не про
-поля: чинить их придётся по очереди, а не разом.
+Поэтому запрос, у которого сломано сразу всё, ответит про маршрут или заголовок,
+а не про поля: чинить их придётся по очереди, а не разом. Обращение к пути,
+которого нет, отвечает **404** `not_found` — это про адрес, а не про платёж;
+несуществующий или чужой платёж на описанном пути даёт **404**
+`payment_not_found`. Метод, не описанный для существующего пути, — **405**
+`method_not_allowed`.
+
+```bash
+# ожидается 404
+curl -i "$API/v1/nope" -H "X-Merchant-Id: $MERCHANT"
+# ожидается 405
+curl -i -X DELETE "$API/v1/payments" -H "X-Merchant-Id: $MERCHANT"
+```
 
 Без `X-Merchant-Id` → **400** `merchant_id_required`:
 
 ```bash
+# ожидается 400
 curl -i "$API/v1/payments"
+```
+
+`X-Merchant-Id`, присланный дважды, → **400** `invalid_merchant_id`: правило
+однократности одинаково для обоих заголовков.
+
+```bash
+# ожидается 400
+curl -i "$API/v1/payments" \
+  -H "X-Merchant-Id: $MERCHANT" \
+  -H "X-Merchant-Id: demo-shop-b"
 ```
 
 Без `Idempotency-Key` (или с пустым значением) → **400**
 `idempotency_key_required`:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
   -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0004"}'
 ```
 
-Ключ длиннее 255 символов → **400** `invalid_idempotency_key`:
+Ключ не прошёл проверку → **400** `invalid_idempotency_key`. Причин ровно две:
+длиннее 255 символов или заголовок прислан больше одного раза.
+
+Набор символов **не ограничен**: годится любая письменность, длина считается
+в символах, а не в байтах. Такой ключ законен, и запрос ниже отвечает **201**,
+а не 400 — он здесь для того, чтобы очертить границу отказа:
 
 ```bash
+# ключ экзотический, но каждый раз новый: повтор прежнего вернул бы 200
+# и тот же платёж — это идемпотентность, а не отказ по набору символов
+# ожидается 201
+curl -i -X POST "$API/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "X-Merchant-Id: $MERCHANT" \
+  -H "Idempotency-Key: заказ-№1/$(uuidgen)" \
+  -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0006"}'
+```
+
+Слишком длинный:
+
+```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -168,11 +235,30 @@ curl -i -X POST "$API/v1/payments" \
   -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0005"}'
 ```
 
+Заголовок прислан дважды — отказ приходит, когда сервис видит два заголовка
+в сыром списке, до того как инфраструктура склеит их в одно значение через
+запятую:
+
+```bash
+# ожидается 400
+curl -i -X POST "$API/v1/payments" \
+  -H "Content-Type: application/json" \
+  -H "X-Merchant-Id: $MERCHANT" \
+  -H "Idempotency-Key: $KEY" \
+  -H "Idempotency-Key: $KEY" \
+  -d '{"amount_minor":125000,"currency":"RUB","order_id":"order-2026-0825-0007"}'
+```
+
+Строгость здесь не придирка: ключ — идентификатор намерения, и два разных
+значения означали бы, что клиент сам не знает, какой запрос повторяет.
+Выбрать за него одно — рискнуть вторым списанием.
+
 Тело не разобрано как JSON-объект → **400** `malformed_request`. Сюда же
 попадают пустое тело, массив вместо объекта и запрос без
 `Content-Type: application/json`:
 
 ```bash
+# ожидается 400
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
@@ -184,6 +270,7 @@ curl -i -X POST "$API/v1/payments" \
 `details.errors` приходят **все** нарушения разом, а не первое попавшееся:
 
 ```bash
+# ожидается 422
 curl -i -X POST "$API/v1/payments" \
   -H "Content-Type: application/json" \
   -H "X-Merchant-Id: $MERCHANT" \
