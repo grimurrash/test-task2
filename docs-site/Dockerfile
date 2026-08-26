@@ -25,8 +25,14 @@ COPY openapi/openapi.yaml /contract/openapi.yaml
 # docs-site/, openapi/openapi.yaml и design/tokens.css.
 COPY . /ctx
 
+# Адрес API вшивается в страницу на сборке — как и у песочницы. Без аргумента
+# остаётся http://localhost:8080, поэтому стандартный стенд ведёт себя как
+# раньше; compose передаёт сюда фактический порт (задача #85).
+ARG API_BASE
+
 ENV SPEC=/contract/openapi.yaml
 ENV TOKENS=/ctx/design/tokens.css
+ENV API_BASE=${API_BASE}
 RUN npm run build
 
 # В рантайме — только nginx и статика: ни node_modules, ни исходников сборки.
