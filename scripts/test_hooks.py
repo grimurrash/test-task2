@@ -1104,14 +1104,32 @@ def project_copy(hook=None, fault=None):
     root = tempfile.mkdtemp(prefix="hook-settings-", dir=_scratch_dir_outside_tmp())
     shutil.copytree(os.path.join(ROOT, ".claude"), os.path.join(root, ".claude"),
                     ignore=shutil.ignore_patterns("__pycache__", "state", "logs"))
+    # Корень копии обязан выглядеть репозиторием: боевой выглядит. Иначе
+    # остаётся признак, по которому вооружение можно включать только под
+    # наблюдением набора — замерено ревью результата ровно такой диверсией:
+    # корень без .git отказ, корень-репозиторий код 1 и пропуск.
+    subprocess.run(["git", "init", "-q", root], check=True,
+                   capture_output=True, timeout=30)
     if hook and fault:
+        # Переносится весь каталог хуков, а не один файл: сбои, живущие
+        # в _paths, _hooklib и в отсутствии файла, иначе до копии не доезжают
+        # и дают ложное зелёное. Найдено ревью результата на чистом дереве.
         d = broken_copy(hook, fault)
         try:
-            shutil.copy(os.path.join(d, hook),
-                        os.path.join(root, ".claude", "hooks", hook))
+            target = os.path.join(root, ".claude", "hooks")
+            for name in ("_run.py", "_hooklib.py", "_paths.py", hook):
+                source = os.path.join(d, name)
+                if os.path.exists(source):
+                    shutil.copy(source, os.path.join(target, name))
+                elif os.path.exists(os.path.join(target, name)):
+                    os.remove(os.path.join(target, name))
         finally:
             shutil.rmtree(d, ignore_errors=True)
     return root
+
+def hook_of(command):
+    """Имя файла хука из строки запуска."""
+    return command.strip().split()[-1].strip('"').rsplit("/", 1)[-1]
 
 def run_call(command, root, payload):
     """Запуск ровно так, как это делает обвязка: строкой из настроек, через
@@ -1133,18 +1151,27 @@ def run_call(command, root, payload):
 # матчер выключает хук целиком, и ни один динамический кейс этого не увидит,
 # потому что все они зовут хук сами. Ожидание списано с таблицы «Что стоит»
 # в docs/HOOKS.md: расхождение кода с документом здесь и есть находка.
-COVERAGE = {
-    "guard-secrets.py": ["Bash", "Read", "Grep", "Glob", "Write", "Edit",
-                         "MultiEdit", "NotebookEdit"],
-    "guard-git.py": ["Bash"],
-    "guard-roles.py": ["Bash"],
-    "guard-scope.py": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"],
-    "guard-protected-files.py": ["Bash", "Write", "Edit", "MultiEdit",
-                                 "NotebookEdit"],
-}
+def coverage_from_doc():
+    """Ожидание — из таблицы «Что стоит» в docs/HOOKS.md, а не из этого файла.
+
+    Держать список рядом с проверкой значит завести вторую копию истины:
+    согласованная правка настроек и списка оставляет дыру, а документ, который
+    читают люди, тихо расходится с обоими. Ревью результата показало и то,
+    и другое — и то, что копия уже разошлась с таблицей, с которой якобы
+    списана. Теперь источник один, и правка настроек упирается в текст.
+    """
+    out = {}
+    with open(os.path.join(ROOT, "docs", "HOOKS.md"), encoding="utf-8") as fh:
+        for line in fh:
+            m = re.match(r"\|\s*`([\w.-]+\.py)`\s*\|\s*PreToolUse:\s*([^|]+)\|", line)
+            if not m or m.group(1).startswith("_"):
+                continue
+            out[m.group(1)] = [t.strip() for t in m.group(2).split(",") if t.strip()]
+    return out
 
 def matcher_gaps():
     """Инструменты, на которых хук обязан стоять, но не стоит."""
+    COVERAGE = coverage_from_doc()
     with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
     groups = []
@@ -1205,6 +1232,14 @@ def check_hook_failures(log_path):
           % ("✓" if ok else "✗",
              "" if ok else ": НЕ ПОДКЛЮЧЕНЫ %s" % ", ".join(missing)))
 
+    described = set(coverage_from_doc())
+    undescribed = [h for h in hooks if h not in described]
+    ok = not undescribed
+    failures += 0 if ok else 1
+    print("    %s каждый хук описан в таблице «Что стоит»%s"
+          % ("✓" if ok else "✗", "" if ok else ": НЕТ СТРОКИ у %s"
+             % ", ".join(h[:-3] for h in undescribed)))
+
     gaps = matcher_gaps()
     ok = not gaps
     failures += 0 if ok else 1
@@ -1250,20 +1285,29 @@ def check_hook_failures(log_path):
     calls = pretooluse_calls()
     clean = project_copy()
     try:
-        for command in calls:
-            hook = command.strip().split()[-1].strip('"').rsplit("/", 1)[-1]
-            broken = project_copy(hook, "main")
+        # Все двенадцать видов сбоя, а не один: половина из них уходит
+        # не в перехват исключений, а в аварийный отказ запускателя, и он,
+        # обезвреженный, оставлял прогон зелёным. Команды перебираются по
+        # кругу, чтобы каждая строка из настроек тоже была исполнена.
+        for i, (fault, title) in enumerate(FAULTS):
+            command = calls[i % len(calls)]
+            hook = hook_of(command)
+            broken = project_copy(hook, fault)
             try:
                 bad = run_call(command, broken, HARMLESS)
             finally:
                 shutil.rmtree(broken, ignore_errors=True)
-            good = run_call(command, clean, HARMLESS)
-            ok = (decision_of(bad) == "deny" and bad.returncode == 0
-                  and decision_of(good) == "allow" and good.returncode == 0)
+            ok = decision_of(bad) == "deny" and bad.returncode == 0
             failures += 0 if ok else 1
-            print("    %s %-24s сломан → %-5s  цел → %-5s"
-                  % ("✓" if ok else "✗", hook[:-3],
-                     decision_of(bad), decision_of(good)))
+            print("    %s %-24s %-38s → %-5s код=%d"
+                  % ("✓" if ok else "✗", hook[:-3], title,
+                     decision_of(bad), bad.returncode))
+        for command in calls:
+            good = run_call(command, clean, HARMLESS)
+            ok = decision_of(good) == "allow" and good.returncode == 0
+            failures += 0 if ok else 1
+            print("    %s %-24s целый хук на безобидной команде → %-5s"
+                  % ("✓" if ok else "✗", hook_of(command)[:-3], decision_of(good)))
     finally:
         shutil.rmtree(clean, ignore_errors=True)
 
@@ -1435,7 +1479,12 @@ def check_doc_count(counted):
     promised = None
     try:
         with open(path, encoding="utf-8") as fh:
-            m = re.search(r"не меньше\s*(\d+)\s*провер", fh.read())
+            text = fh.read()
+        # Граница берётся по платформе прогона: одно число на всех давало бы
+        # запас там, где стоит гейт (CI идёт на linux, где проверок больше).
+        pattern = (r"на linux — не меньше\s*(\d+)" if sys.platform.startswith("linux")
+                   else r"не меньше\s*(\d+)\s*провер")
+        m = re.search(pattern, text)
         promised = int(m.group(1)) if m else None
     except OSError:
         pass
