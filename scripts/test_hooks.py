@@ -490,7 +490,7 @@ ALREADY_CAUGHT = [
 # за прогон не открываются ни на чтение, ни на запись.
 STATE_DIR = None
 
-def run(hook, payload, project_dir=None, state_dir=None):
+def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None):
     # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
     # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
     # переменную (или os.getcwd() в её отсутствие). project_dir=None — обычный
@@ -504,10 +504,14 @@ def run(hook, payload, project_dir=None, state_dir=None):
     # у guard-scope от него считается «внутри/снаружи», а у protected-files —
     # какие пути защищены). Уводится только то, куда хук ПИШЕТ: state_dir.
     # Значение по умолчанию — временный каталог прогона, а не ROOT.
+    #
+    # issue #156: hooks_dir — откуда взять сам файл хука. По умолчанию боевой
+    # каталог; проверка «упавший хук отказывает» подставляет сюда копию
+    # с внесённым сбоем, не трогая оригинал.
     env = dict(os.environ,
                CLAUDE_PROJECT_DIR=project_dir or ROOT,
                CLAUDE_HOOK_STATE_DIR=state_dir or STATE_DIR)
-    proc = subprocess.run([sys.executable, os.path.join(HOOKS, hook)],
+    proc = subprocess.run([sys.executable, os.path.join(hooks_dir or HOOKS, hook)],
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
     return proc
@@ -778,6 +782,179 @@ def snapshot_tree(root):
             except OSError:
                 out[os.path.relpath(path, root)] = None
     return out
+
+# --- issue #156: упавший хук отказывает, а не разрешает ---
+#
+# Барьером Claude Code считает код 2 либо код 0 с решением «deny» в JSON.
+# Необработанное исключение даёт код 1 — «неблокирующая ошибка», после которой
+# команда исполняется. Хук, сломавшийся на разборе, не отказывает: он молчит
+# и пропускает. Цена этой ошибки несимметрична — ложный отказ виден сразу,
+# тихий пропуск не виден никогда.
+#
+# Живой экземпляр (тысяча вложенных heredoc, RecursionError во всех трёх хуках
+# на Bash) закрыт в #103 и больше не воспроизводится: пять форм того же класса
+# прогнаны по пяти хукам, код 0 на всех двадцати пяти запусках. Поэтому здесь
+# хук ломается искусственно. Проверяется класс, а не форма, и проверка
+# не зависит от того, осталась ли в разборе живая дыра.
+
+FAULT = "искусственный сбой разбора (проверка #156)"
+
+# Безобидный вход. Он же — вторая половина парной проверки: сломанный хук
+# обязан отказать даже на нём, непорченый — пропустить.
+HARMLESS = {"tool_name": "Bash", "tool_input": {"command": "cat README.md"}}
+
+# То, что каждый хук обязан не пропускать. Нужно, чтобы копия во временном
+# каталоге доказала, что она настоящий хук, а не заглушка, которая «пропускает
+# всё»: иначе парная половина зелёная по построению.
+HOSTILE = {
+    "guard-secrets.py": {"tool_name": "Bash", "tool_input": {"command": "cat .env"}},
+    "guard-git.py": {"tool_name": "Bash",
+                     "tool_input": {"command": "git push --force origin main"}},
+    "guard-roles.py": {"tool_name": "Bash",
+                       "cwd": os.path.join(ROOT, ".worktrees", "rustem"),
+                       "tool_input": {"command": "gh issue close 42"}},
+    "guard-scope.py": {"tool_name": "Bash",
+                       "tool_input": {"command": "echo x > /outside/file"}},
+    "guard-protected-files.py": {"tool_name": "Edit",
+                                 "tool_input": {"file_path": os.path.join(
+                                     ROOT, ".claude", "settings.json")}},
+}
+
+def pretooluse_hooks():
+    """Хуки PreToolUse — читаются из settings.json, а не перечислены здесь.
+
+    Список в тесте устаревает молча: хук, добавленный завтра и забытый в этом
+    файле, остался бы непроверенным — и ровно он мог бы оказаться тем, который
+    падением разрешает команду. Здесь набор спрашивает у настроек, кто сегодня
+    стоит на входе.
+    """
+    with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    names = []
+    for group in cfg.get("hooks", {}).get("PreToolUse", []):
+        for item in group.get("hooks", []):
+            name = item.get("command", "").strip().strip('"').rsplit("/", 1)[-1].strip('"')
+            if name.endswith(".py") and name not in names:
+                names.append(name)
+    return names
+
+def broken_copy(hook, fault):
+    """Копия хука и обеих его библиотек во временном каталоге, куда внесён
+    ровно один искусственный сбой. Возвращает каталог; удаляет вызывающий.
+
+    Ломается копия, а не боевой файл: набор не имеет права выключать защиту
+    репозитория даже на секунду — рядом работают другие сессии. Копия при этом
+    побайтно та же, кроме одной вставленной строки, и это не берётся на веру:
+    парная половина ниже прогоняет непорченую копию и требует от неё поведения
+    настоящего хука — пропустить README и отказать в своём запретном случае.
+
+    Виды сбоя — три разных места на пути хука к решению:
+      "main"   — исключение первой строкой main(): падение на исполнении;
+      "module" — исключение на уровне модуля, перед main(): хук не дошёл
+                 до кода решения вовсе;
+      "import" — исключение при импорте _paths: падение внутри чужого модуля,
+                 который хук поднимает у себя на старте.
+
+    Последние два — то, ради чего перехват стоит на sys.excepthook, а не
+    на try вокруг main(): try туда не дотягивается.
+    """
+    d = tempfile.mkdtemp(prefix="hook-fault-", dir=_scratch_dir_outside_tmp())
+    for name in ("_hooklib.py", "_paths.py", hook):
+        shutil.copy(os.path.join(HOOKS, name), os.path.join(d, name))
+    if fault is None:
+        return d
+    target = os.path.join(d, "_paths.py" if fault == "import" else hook)
+    with open(target, encoding="utf-8") as fh:
+        src = fh.read()
+    crash = "raise RuntimeError(%r)\n" % FAULT
+    if fault == "import":
+        src = crash + src
+    else:
+        head, sep, tail = src.partition("\ndef main():\n")
+        if not sep:
+            raise RuntimeError("в %s нет точки вставки сбоя" % hook)
+        src = (head + "\n" + crash + sep + tail) if fault == "module" else \
+              (head + sep + "    " + crash + tail)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(src)
+    return d
+
+def check_hook_failures(log_path):
+    """Раздел про #156. Печатает себя сам, возвращает число провалов."""
+    failures = 0
+    hooks = pretooluse_hooks()
+    print("\n  упавший хук отказывает, а не разрешает (issue #156)")
+    print("    хуков PreToolUse в settings.json: %d — %s"
+          % (len(hooks), ", ".join(h[:-3] for h in hooks)))
+    if not hooks:
+        print("    ✗ список пуст: настройки прочитаны, а хуков на входе нет")
+        return 1
+
+    faults = [
+        ("main", "исключение в main()"),
+        ("module", "исключение на уровне модуля"),
+        ("import", "исключение при импорте _paths"),
+    ]
+    for hook in hooks:
+        for fault, title in faults:
+            d = broken_copy(hook, fault)
+            try:
+                proc = run(hook, HARMLESS, hooks_dir=d)
+                got = decision_of(proc)
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
+            ok = got == "deny"
+            failures += 0 if ok else 1
+            print("    %s %-24s %-32s ожидали deny, получили %-5s (код %d)"
+                  % ("✓" if ok else "✗", hook[:-3], title, got, proc.returncode))
+
+    print("    — парная половина: та же копия без сбоя обязана работать как хук")
+    for hook in hooks:
+        d = broken_copy(hook, None)
+        try:
+            passed = decision_of(run(hook, HARMLESS, hooks_dir=d))
+            hostile = HOSTILE.get(hook)
+            blocked = decision_of(run(hook, hostile, hooks_dir=d)) if hostile else None
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        ok = passed == "allow" and (blocked is None or blocked == "deny")
+        failures += 0 if ok else 1
+        detail = "README пропущен: %s" % passed
+        if hostile:
+            detail += ", свой запретный случай: %s" % blocked
+        else:
+            detail += ", запретного случая для этого хука в наборе нет"
+        print("    %s %-24s %s" % ("✓" if ok else "✗", hook[:-3], detail))
+
+    # Поломка, записанная как обычный отказ, выглядит как строгость — и тогда
+    # её никто не чинит. Событие в журнале должно называть сбой сбоем.
+    print("    — след в журнале отличим от обычного отказа")
+    hook = hooks[0]
+    d = broken_copy(hook, "main")
+    before = _size(log_path)
+    try:
+        run(hook, HARMLESS, hooks_dir=d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    tail = _tail(log_path, before)
+    rec = {}
+    for line in tail.strip().splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    checks = [
+        ("событие названо своим именем, а не deny",
+         rec.get("event") == "hook-error" and '"event": "deny"' not in tail,
+         "event=%s" % rec.get("event", "<записи нет>")),
+        ("названы хук и исключение",
+         rec.get("guard") == hook[:-3] and FAULT in json.dumps(rec, ensure_ascii=False),
+         "guard=%s" % rec.get("guard", "—")),
+    ]
+    for title, ok, detail in checks:
+        failures += 0 if ok else 1
+        print("    %s %-52s %s" % ("✓" if ok else "✗", title, detail))
+    return failures
 
 def main():
     global STATE_DIR
@@ -1622,6 +1799,8 @@ def _main():
             print("    %s %-52s %s" % ("✓" if ok else "✗", title, detail))
     finally:
         shutil.rmtree(double, ignore_errors=True)
+
+    failures += check_hook_failures(log_path)
 
     print("\n  боевое состояние после прогона — наблюдение, не проверка")
     # Раньше на этом месте боевые файлы возвращались из снимка. Возвращать
