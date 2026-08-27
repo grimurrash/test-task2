@@ -867,11 +867,13 @@ HOSTILE = {
                                      ROOT, ".claude", "settings.json")}},
 }
 
-# Семь мест, где хук может умереть по дороге к решению. Первые три покрыл бы
+# Десять мест, где хук может умереть по дороге к решению. Первые три покрыл бы
 # и перехват изнутри процесса; следующие три — только тем, что перехват стоит
-# в отдельном запускателе, поднимающемся раньше файла хука. Последнее не ловится
-# перехватом вовсе: sys.excepthook не вызывается для SystemExit, и код 1 прошёл
-# бы мимо — находка внешнего ревьюера, закрыта в самом запускателе.
+# в отдельном запускателе, поднимающемся раньше файла хука. Последние четыре
+# перехват исключений не видит принципиально, и каждое закрыто в запускателе
+# отдельно: SystemExit мимо excepthook, отсутствующий arm в поднявшейся
+# библиотеке, подменённый изнутри excepthook и посторонняя печать, делающая
+# вывод неразбираемым.
 FAULTS = [
     ("main", "исключение в main()"),
     ("module", "исключение на уровне модуля"),
@@ -880,6 +882,9 @@ FAULTS = [
     ("lib", "не поднялась библиотека хуков"),
     ("missing", "файла хука нет на месте"),
     ("exit1", "sys.exit(1) вместо решения"),
+    ("noarm", "в библиотеке нет перехвата"),
+    ("stealhook", "хук подменил sys.excepthook"),
+    ("noise", "хук печатает не решение"),
 ]
 
 # Сбой не в коде хука, а на входе в него. Тикет про то же самое: разбор
@@ -893,9 +898,18 @@ BAD_INPUTS = [
     # Форма другая, но содержимое читается. Оно обязано быть проверено, а не
     # выброшено: guard-secrets видит в нём свой запретный путь и отказывает,
     # остальным четверым там нечего ловить — и они молчат. Обе половины сразу.
-    ("форма события другая: tool_input списком", None,
+    ("форма другая: секрет списком", None,
      {"tool_name": "Bash", "tool_input": ["cat", "~/.aws/credentials"]},
      {"guard-secrets.py": "deny"}, "allow"),
+    # Второй случай той же формы — и он обязателен именно здесь. Первый
+    # проходил бы и при неверной сборке текста: шаблон пути живёт без \s+
+    # и переживает любые разделители. Здесь шаблон склеен через \s+, поэтому
+    # список, собранный запятыми вместо пробелов, стал бы тихим пропуском —
+    # ровно это и нашло ревью результата.
+    ("форма другая: force-push списком", None,
+     {"tool_name": "Bash",
+      "tool_input": ["git", "push", "--force", "origin", "main"]},
+     {"guard-git.py": "deny"}, "allow"),
 ]
 
 def pretooluse_hooks():
@@ -970,6 +984,34 @@ def broken_copy(hook, fault):
     if fault == "syntax":
         with open(os.path.join(d, hook), "a", encoding="utf-8") as fh:
             fh.write("\ndef (((   # %s\n" % FAULT)
+        return d
+    if fault == "noarm":
+        # Библиотека поднимается, а нужной функции в ней нет: переименование,
+        # потерянный при слиянии кусок, старая копия рядом.
+        lib = os.path.join(d, "_hooklib.py")
+        with open(lib, encoding="utf-8") as fh:
+            src = fh.read()
+        with open(lib, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("\ndef arm(", "\ndef arm_%s(" % "renamed", 1))
+        return d
+    if fault == "stealhook":
+        # Перехват держится на глобальной переменной процесса, и любой
+        # поднятый хуком модуль может её перезаписать.
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + "\nsys.excepthook = sys.__excepthook__\n" + sep +
+                     "    raise RuntimeError(%r)\n" % FAULT + tail)
+        return d
+    if fault == "noise":
+        # Посторонняя печать делает вывод неразбираемым, а неразбираемый
+        # вывод обвязка считает разрешением.
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + "\nprint(%r)\n" % (FAULT * 3) + sep + tail)
         return d
     target = os.path.join(d, "_paths.py" if fault == "paths" else hook)
     with open(target, encoding="utf-8") as fh:

@@ -20,6 +20,7 @@
 сигналом. Регресс где-то обязан закончиться; он заканчивается здесь,
 на файле в двадцать строк логики, который меняется реже всех остальных.
 """
+import io
 import json
 import os
 import runpy
@@ -57,44 +58,81 @@ def emergency(guard, detail):
 
 def main():
     name = os.path.basename(sys.argv[1]) if len(sys.argv) > 1 else ""
-    guard = name[:-3] if name.endswith(".py") else (name or "хук не назван")
     if not name.endswith(".py"):
-        emergency(guard, "запускателю не сказано, какой хук запускать")
+        emergency("запускатель", "не сказано, какой хук запускать")
+    guard = name[:-3]
 
     sys.path.insert(0, HERE)
     try:
         import _hooklib as H
+        # arm() внутри того же try, что и импорт: библиотека может подняться,
+        # а нужной функции в ней не оказаться — переименование, потерянный
+        # при слиянии кусок, старая копия рядом. AttributeError отсюда летел бы
+        # мимо ещё не поставленного перехвата и давал код 1, то есть пропуск.
+        # Найдено ревью результата.
+        handler = H.arm(guard)
     except BaseException as exc:
         emergency(guard, "не поднялась библиотека хуков: %s: %s"
                   % (type(exc).__name__, exc))
 
-    # С этой строки любое падение — отказ с названной причиной и записью
-    # «hook-error» в журнале, включая падение при компиляции самого хука.
-    H.arm(guard)
+    # Вывод хука собирается здесь, а не течёт сразу наружу. Так решение
+    # печатает запускатель — ровно одно и целиком, — и хук, напечатавший
+    # что-то постороннее, не может сделать вывод неразбираемым: неразбираемый
+    # вывод обвязка считает разрешением.
+    real_stdout, buffer = sys.stdout, io.StringIO()
+    sys.stdout = buffer
+    code = 0
     try:
+        del sys.argv[1:]          # хук видит свой argv, а не наш
         runpy.run_path(os.path.join(HERE, name), run_name="__main__")
     except SystemExit as exc:
         # sys.excepthook не вызывается для SystemExit — значит sys.exit(1)
         # из хука или из любого поднятого им кода прошёл бы мимо перехвата
-        # и дал ровно тот неблокирующий код 1, который здесь и чинится
-        # (находка внешнего ревьюера). Штатные выходы — 0 (решение напечатано
-        # или проверка прошла) и 2 (запасной барьер); всё остальное означает,
-        # что хук ушёл, не выдав решения.
+        # и дал ровно тот неблокирующий код 1, который здесь и чинится.
         code = exc.code
         if code is None:
             code = 0
         if not isinstance(code, int):
             code = 1
-        if code not in (0, 2):
-            detail = "хук завершился кодом %s, не выдав решения" % code
-            # Библиотека здесь уже поднята — значит след в журнале возможен
-            # и обязателен: отказ без записи неотличим от строгости.
-            try:
-                H.log(H.HOOK_ERROR, {"guard": guard, "hook_event": "PreToolUse",
-                                     "error": detail, "where": name})
-            except BaseException:
-                pass
-            emergency(guard, detail)
+    except BaseException:
+        # Перехват зовётся напрямую, а не через sys.excepthook: тот —
+        # глобальная переменная процесса, и любой поднятый хуком модуль может
+        # её перезаписать. Ссылка на обработчик получена до запуска хука.
+        sys.stdout = real_stdout
+        handler(*sys.exc_info())
         raise
+    finally:
+        sys.stdout = real_stdout
+
+    out = buffer.getvalue().strip()
+    if code not in (0, 2):
+        detail = "хук завершился кодом %s, не выдав решения" % code
+        # Библиотека здесь уже поднята — значит след в журнале возможен
+        # и обязателен: отказ без записи неотличим от строгости.
+        note(H, guard, detail, name)
+        emergency(guard, detail)
+    if out:
+        try:
+            json.loads(out)
+        except Exception:
+            detail = ("хук напечатал не решение, а %d Б постороннего вывода"
+                      % len(out.encode("utf-8")))
+            note(H, guard, detail, name)
+            emergency(guard, detail)
+    try:
+        real_stdout.write(out)
+        real_stdout.flush()
+    except BaseException:
+        # Решение есть, отдать его некуда. Барьером остаётся код 2.
+        os._exit(2)
+    os._exit(code)
+
+def note(H, guard, detail, where):
+    """След в журнале для путей, которые перехват исключений не видит."""
+    try:
+        H.log(H.HOOK_ERROR, {"guard": guard, "hook_event": "PreToolUse",
+                             "error": detail, "where": where})
+    except BaseException:
+        pass
 
 main()

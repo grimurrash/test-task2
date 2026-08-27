@@ -151,6 +151,29 @@ def repo_root(cwd=None):
         common_dir = os.path.join(base, common_dir)
     return os.path.dirname(os.path.realpath(common_dir))
 
+def as_text(value):
+    """Чужую форму значения — в строку, на которой сработают проверки.
+
+    Не json.dumps: он ставит между элементами запятую и кавычки, а все боевые
+    шаблоны склеены через \\s+ — `["git", "push", "origin", "main"]` не совпал бы
+    ни с одним из них, и «проверяется как текст» осталось бы словами. Замерено
+    ревью результата: список проходил там, где та же команда строкой отклонялась.
+    Элементы соединяются пробелом — так получается ровно то, чем эта форма
+    и является: командой и её аргументами.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return " ".join(as_text(v) for v in value)
+    if isinstance(value, dict):
+        return " ".join(as_text(v) for v in value.values())
+    if value is None:
+        return ""
+    try:
+        return str(value)
+    except Exception:
+        return repr(value)[:2000]
+
 def read_input():
     """Вход хука, приведённый к форме, на которой хуки не падают (issue #156).
 
@@ -185,15 +208,9 @@ def read_input():
     if not isinstance(ti, dict):
         # Не выбрасывается, а превращается в текст и проверяется как текст:
         # выброшенное поле — это тихий пропуск, ровно то, что здесь чинится.
-        try:
-            data["tool_input"] = {"command": json.dumps(ti, ensure_ascii=False)}
-        except Exception:
-            data["tool_input"] = {"command": repr(ti)[:2000]}
+        data["tool_input"] = {"command": as_text(ti)}
     elif ti.get("command") is not None and not isinstance(ti.get("command"), str):
-        try:
-            ti["command"] = json.dumps(ti["command"], ensure_ascii=False)
-        except Exception:
-            ti["command"] = repr(ti["command"])[:2000]
+        ti["command"] = as_text(ti["command"])
     if data.get("cwd") is not None and not isinstance(data.get("cwd"), str):
         data.pop("cwd", None)
     return data
@@ -417,6 +434,10 @@ def arm(guard, event="PreToolUse"):
 
     sys.excepthook = handler
     ARMED[0] = True
+    # Обработчик возвращается наружу: sys.excepthook — глобальная
+    # переменная процесса, и любой поднятый хуком модуль может её
+    # перезаписать. Запускатель держит прямую ссылку и зовёт её сам.
+    return handler
 
 def decide(decision, reason, guard=""):
     """deny — заблокировать, ask — спросить у сэра, allow — пропустить молча."""
