@@ -71,6 +71,22 @@ def main():
     # С этой строки любое падение — отказ с названной причиной и записью
     # «hook-error» в журнале, включая падение при компиляции самого хука.
     H.arm(guard)
-    runpy.run_path(os.path.join(HERE, name), run_name="__main__")
+    try:
+        runpy.run_path(os.path.join(HERE, name), run_name="__main__")
+    except SystemExit as exc:
+        # sys.excepthook не вызывается для SystemExit — значит sys.exit(1)
+        # из хука или из любого поднятого им кода прошёл бы мимо перехвата
+        # и дал ровно тот неблокирующий код 1, который здесь и чинится
+        # (находка внешнего ревьюера). Штатные выходы — 0 (решение напечатано
+        # или проверка прошла) и 2 (запасной барьер); всё остальное означает,
+        # что хук ушёл, не выдав решения.
+        code = exc.code
+        if code is None:
+            code = 0
+        if not isinstance(code, int):
+            code = 1
+        if code not in (0, 2):
+            emergency(guard, "хук завершился кодом %s, не выдав решения" % code)
+        raise
 
 main()

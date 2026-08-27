@@ -514,7 +514,7 @@ ALREADY_CAUGHT = [
 STATE_DIR = None
 
 def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None,
-        launcher=False):
+        launcher=False, raw=None):
     # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
     # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
     # переменную (или os.getcwd() в её отсутствие). project_dir=None — обычный
@@ -542,8 +542,12 @@ def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None,
     base = hooks_dir or HOOKS
     argv = [sys.executable, os.path.join(base, "_run.py"), hook] if launcher \
         else [sys.executable, os.path.join(base, hook)]
+    # raw — подать на вход не разобранный JSON, а произвольный текст:
+    # сбой разбора самого события относится к тому же классу, что и сбой
+    # разбора команды (issue #156).
     proc = subprocess.run(argv,
-                          input=json.dumps(payload), capture_output=True,
+                          input=json.dumps(payload) if raw is None else raw,
+                          capture_output=True,
                           text=True, env=env, timeout=30)
     return proc
 
@@ -863,9 +867,11 @@ HOSTILE = {
                                      ROOT, ".claude", "settings.json")}},
 }
 
-# Шесть мест, где хук может умереть по дороге к решению. Первые три покрыл бы
-# и перехват изнутри процесса; последние три — только тем, что перехват стоит
-# в отдельном запускателе, поднимающемся раньше файла хука.
+# Семь мест, где хук может умереть по дороге к решению. Первые три покрыл бы
+# и перехват изнутри процесса; следующие три — только тем, что перехват стоит
+# в отдельном запускателе, поднимающемся раньше файла хука. Последнее не ловится
+# перехватом вовсе: sys.excepthook не вызывается для SystemExit, и код 1 прошёл
+# бы мимо — находка внешнего ревьюера, закрыта в самом запускателе.
 FAULTS = [
     ("main", "исключение в main()"),
     ("module", "исключение на уровне модуля"),
@@ -873,6 +879,23 @@ FAULTS = [
     ("syntax", "синтаксическая ошибка в файле хука"),
     ("lib", "не поднялась библиотека хуков"),
     ("missing", "файла хука нет на месте"),
+    ("exit1", "sys.exit(1) вместо решения"),
+]
+
+# Сбой не в коде хука, а на входе в него. Тикет про то же самое: разбор
+# не состоялся, значит проверки не было. Ожидание задаётся по хукам, а не одно
+# на всех: «отказать всегда» — это второй способ сломать механизм, и парная
+# половина обязана быть и здесь.
+BAD_INPUTS = [
+    # Вход не разобрался вовсе — не видно ни инструмента, ни команды.
+    # Проверки не было ни у одного хука, значит отказывают все.
+    ("вход вообще не разобран", "не json, а просто текст", None, {}, "deny"),
+    # Форма другая, но содержимое читается. Оно обязано быть проверено, а не
+    # выброшено: guard-secrets видит в нём свой запретный путь и отказывает,
+    # остальным четверым там нечего ловить — и они молчат. Обе половины сразу.
+    ("форма события другая: tool_input списком", None,
+     {"tool_name": "Bash", "tool_input": ["cat", "~/.aws/credentials"]},
+     {"guard-secrets.py": "deny"}, "allow"),
 ]
 
 def pretooluse_hooks():
@@ -920,7 +943,7 @@ def broken_copy(hook, fault):
     половина ниже прогоняет непорченую копию и требует от неё поведения
     настоящего хука — пропустить README и отказать в своём запретном случае.
 
-    Виды сбоя — шесть разных мест на пути к решению:
+    Виды сбоя — семь разных мест на пути к решению:
       "main"    — исключение первой строкой main(): падение на исполнении;
       "module"  — исключение на уровне модуля: хук не дошёл до кода решения;
       "paths"   — исключение при импорте _paths: падение чужого модуля;
@@ -928,7 +951,9 @@ def broken_copy(hook, fault):
                   поэтому перехват изнутри файла тут бессилен по построению;
       "lib"     — не поднялась сама библиотека хуков, то есть то, что обычно
                   и ставит перехват;
-      "missing" — файла хука нет вовсе.
+      "missing" — файла хука нет вовсе;
+      "exit1"   — хук уходит кодом 1, не выдав решения: единственный вид,
+                  который перехват исключений не видит принципиально.
     """
     d = tempfile.mkdtemp(prefix="hook-fault-", dir=_scratch_dir_outside_tmp())
     for name in ("_run.py", "_hooklib.py", "_paths.py", hook):
@@ -949,7 +974,8 @@ def broken_copy(hook, fault):
     target = os.path.join(d, "_paths.py" if fault == "paths" else hook)
     with open(target, encoding="utf-8") as fh:
         src = fh.read()
-    crash = "raise RuntimeError(%r)\n" % FAULT
+    crash = ("raise SystemExit(1)   # %s\n" % FAULT) if fault == "exit1" \
+        else ("raise RuntimeError(%r)\n" % FAULT)
     if fault == "paths":
         src = crash + src
     else:
@@ -986,16 +1012,29 @@ def check_hook_failures(log_path):
                 reason = reason_of(proc)
             finally:
                 shutil.rmtree(d, ignore_errors=True)
-            # Требование тикета проверяется обеими половинами сразу: решение —
-            # отказ, и код возврата — не 1. Вторая половина не декорация: хук,
-            # напечатавший deny и ушедший с кодом 1, прошёл бы проверку решения,
-            # а требование «ни один путь не заканчивается кодом 1» осталось бы
-            # невыполненным.
-            ok = got == "deny" and proc.returncode != 1 and hook[:-3] in reason
+            # Требование тикета проверяется всеми тремя половинами сразу:
+            # решение — отказ, код возврата — из двух блокирующих (0 с решением
+            # в JSON или 2), причина — названа. «Код не 1» было бы слабее
+            # заявленного: отрицательный код от сигнала и любой другой ненулевой
+            # тоже не блокируют (замечание внешнего ревьюера).
+            ok = (got == "deny" and proc.returncode in (0, 2)
+                  and hook[:-3] in reason)
             failures += 0 if ok else 1
             print("    %s %-24s %-38s deny=%-5s код=%d причина=%s"
                   % ("✓" if ok else "✗", hook[:-3], title, got == "deny",
                      proc.returncode, "названа" if hook[:-3] in reason else "НЕТ"))
+
+    print("    — сбой не в коде хука, а на входе в него")
+    for title, raw, payload, per_hook, default in BAD_INPUTS:
+        for hook in hooks:
+            expected = per_hook.get(hook, default)
+            proc = run(hook, payload or {}, launcher=True, raw=raw)
+            got = decision_of(proc)
+            ok = got == expected and proc.returncode in (0, 2)
+            failures += 0 if ok else 1
+            print("    %s %-24s %-38s ожидали %-5s получили %-5s код=%d"
+                  % ("✓" if ok else "✗", hook[:-3], title, expected, got,
+                     proc.returncode))
 
     print("    — парная половина: та же копия без сбоя обязана работать как хук")
     for hook in hooks:

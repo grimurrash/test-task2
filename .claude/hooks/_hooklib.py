@@ -163,16 +163,32 @@ def read_input():
 
     Приведение сделано в пользу проверки, а не в пользу тишины: непонятная
     команда не выбрасывается, а превращается в текст и проверяется как текст.
+    Вход, который не разобрался вовсе, для вооружённого хука становится
+    отказом — там проверка не состоялась ни в каком виде.
     """
     try:
         data = json.load(sys.stdin)
-    except Exception:
-        return {}
-    if not isinstance(data, dict):
+        if not isinstance(data, dict):
+            raise ValueError("вход хука — не объект, а %s" % type(data).__name__)
+    except Exception as exc:
+        # Вход не разобран — значит хук не увидел, что именно он судит.
+        # Для вооружённого хука это тот же класс, что и любой другой сбой
+        # разбора: проверка не состоялась, а несостоявшаяся проверка
+        # разрешением не является. Исключение поднимается наружу и становится
+        # отказом с причиной там же, где и все остальные (issue #156,
+        # находка внешнего ревьюера).
+        if ARMED[0]:
+            raise ValueError("вход хука не разобран: %s: %s"
+                             % (type(exc).__name__, exc))
         return {}
     ti = data.get("tool_input")
     if not isinstance(ti, dict):
-        data["tool_input"] = {}
+        # Не выбрасывается, а превращается в текст и проверяется как текст:
+        # выброшенное поле — это тихий пропуск, ровно то, что здесь чинится.
+        try:
+            data["tool_input"] = {"command": json.dumps(ti, ensure_ascii=False)}
+        except Exception:
+            data["tool_input"] = {"command": repr(ti)[:2000]}
     elif ti.get("command") is not None and not isinstance(ti.get("command"), str):
         try:
             ti["command"] = json.dumps(ti["command"], ensure_ascii=False)
@@ -276,6 +292,12 @@ HOOK_ERROR = "hook-error"
 # обвязка считает разрешением. Список, а не переменная, — чтобы менять его
 # из decide() без global.
 PRINTED = [False]
+
+# Поставлен ли перехват падений. Пока он не поставлен, нераспознанный вход —
+# это прежнее поведение (пустой словарь и молчание): у PostToolUse отказом
+# уже ничего не предотвратить, и превращать там сбой разбора в исключение
+# значило бы шуметь без пользы.
+ARMED = [False]
 
 def arm(guard, event="PreToolUse"):
     """Хук заканчивается решением, а не трассировкой (issue #156).
@@ -394,6 +416,7 @@ def arm(guard, event="PreToolUse"):
         os._exit(2)
 
     sys.excepthook = handler
+    ARMED[0] = True
 
 def decide(decision, reason, guard=""):
     """deny — заблокировать, ask — спросить у сэра, allow — пропустить молча."""
