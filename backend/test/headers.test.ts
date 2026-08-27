@@ -111,7 +111,7 @@ const get = (send: RawSender, merchant: string): Promise<RawResponse> =>
 const errorCode = (res: RawResponse): string =>
   (JSON.parse(res.body) as { error: { code: string } }).error.code;
 
-describe('#73 · заголовок, присланный дважды', () => {
+describe('@req F7b #73 · заголовок, присланный дважды', () => {
   /**
    * Главный тест задачи, и он сформулирован **на исход, а не на механику**:
    * два одинаковых заголовка дают один платёж или отказ, но никогда два `id`
@@ -195,7 +195,7 @@ describe('#73 · заголовок, присланный дважды', () => {
   });
 });
 
-describe('#75 · длина ключа в символах, а не в байтах', () => {
+describe('@req F7c @req F21 #75 · длина ключа в символах, а не в байтах', () => {
   // Значение заголовка приходит побайтно: кириллическая буква — два байта.
   const cyrillic = (count: number) => Buffer.from('к'.repeat(count), 'utf8').toString('latin1');
 

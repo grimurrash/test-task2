@@ -17,7 +17,7 @@ const SUCCEEDED_AMOUNT = 10002;
 /** Сумма с остатком 01 — платёж рождается сразу failed (F17). */
 const FAILED_AMOUNT = 10001;
 
-describe('F12 · получение платежа по id', () => {
+describe('@req F12 · получение платежа по id', () => {
   it('отдаёт платёж своему мерчанту', async () => {
     const app = await startApp();
     const created = asPayment((await app.create(validBody())).body);
@@ -50,7 +50,7 @@ describe('F12 · получение платежа по id', () => {
   });
 });
 
-describe('F13, F14 · отмена', () => {
+describe('@req F13 @req F14 · отмена', () => {
   it('переводит pending в canceled и отвечает 200', async () => {
     const app = await startApp();
     const created = asPayment((await app.create(validBody())).body);
@@ -113,7 +113,7 @@ describe('F13, F14 · отмена', () => {
   });
 });
 
-describe('F15 · отмена платежа в терминальном статусе', () => {
+describe('@req F15 · отмена платежа в терминальном статусе', () => {
   it('succeeded → 409 payment_not_cancelable', async () => {
     const app = await startApp();
     const created = asPayment(
@@ -149,7 +149,7 @@ describe('F15 · отмена платежа в терминальном ста�
   });
 });
 
-describe('F16 · список платежей мерчанта', () => {
+describe('@req F16 · список платежей мерчанта', () => {
   it('у нового мерчанта список пуст', async () => {
     const app = await startApp();
     const res = await app.list('fresh-merchant');

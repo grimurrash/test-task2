@@ -23,7 +23,7 @@ describe('деньги: минорные единицы → строка', () =>
   })
 })
 
-describe('семантика ответа (U3)', () => {
+describe('@req U3 семантика ответа', () => {
   it('201 — created/новый, 200 — repeat/тот же', () => {
     expect(semanticFor(201)).toBe('created')
     expect(verdictFor(201)).toBe('new')

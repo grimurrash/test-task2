@@ -16,7 +16,7 @@ const hostile: Payment = {
   created_at: '2026-08-25T12:00:00.000Z',
 }
 
-describe('A10: description выводится как текст', () => {
+describe('@req U6 A10: description выводится как текст', () => {
   it('разметка видна буквально, узлы script/b в DOM не создаются', () => {
     const { container } = render(
       <PaymentsList merchant="demo-shop-a" payments={[hostile]} note={null} />,

@@ -18,7 +18,7 @@ function fieldErrors(body: unknown): Record<string, string> {
   return errors;
 }
 
-describe('F8 · amount_minor', () => {
+describe('@req F8 · amount_minor', () => {
   const rejected: [string, unknown][] = [
     ['ноль', 0],
     ['отрицательное', -1],
@@ -70,7 +70,7 @@ describe('F8 · amount_minor', () => {
   });
 });
 
-describe('F9 · currency', () => {
+describe('@req F9 · currency', () => {
   for (const [name, value] of [
     ['неизвестная', 'GBP'],
     ['нижний регистр', 'rub'],
@@ -108,7 +108,7 @@ describe('F9 · currency', () => {
   }
 });
 
-describe('F10 · order_id', () => {
+describe('@req F10 · order_id', () => {
   for (const [name, value] of [
     ['пустая строка', ''],
     ['длиннее 64 символов', 'o'.repeat(65)],
@@ -141,7 +141,7 @@ describe('F10 · order_id', () => {
   });
 });
 
-describe('F11 · description', () => {
+describe('@req F11 · description', () => {
   it('отклоняет длину больше 512 символов', async () => {
     const app = await startApp();
     const res = await app.create(validBody({ description: 'д'.repeat(513) }));
@@ -223,7 +223,7 @@ describe('F11 · description', () => {
  * строку. Дыра держалась потому, что автоматическая сверка проверяла ответы,
  * а расходилась проверка запроса.
  */
-describe('#64 · длина в кодовых точках', () => {
+describe('@req F21 #64 · длина в кодовых точках', () => {
   const emoji = (count: number) => '\u{1F642}'.repeat(count);
   // Суррогатная пара: одна кодовая точка, две кодовые единицы.
   const surrogate = '\u{1D11E}'; // ключ «соль»
@@ -360,7 +360,7 @@ describe('Все нарушения одним ответом', () => {
 // Пробел A закрыт правкой контракта (#32, PR #38): «разбирать нечего» — это
 // форма запроса, то есть 400 malformed_request, а не 422. Ось «400 — форма,
 // 422 — разобранные поля» держится целиком.
-describe('Тело, которое нечем разобрать → 400 malformed_request', () => {
+describe('@req F20 @req F22 Тело, которое нечем разобрать → 400 malformed_request', () => {
   for (const [name, raw] of [
     ['оборванный JSON', '{"amount_minor":'],
     ['пустое тело', ''],
