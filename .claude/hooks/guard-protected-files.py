@@ -24,13 +24,15 @@
 оказаться самим worktree, а не основной копией. Теперь корень — общий для
 обеих через `git rev-parse --git-common-dir` (`_hooklib.repo_root`).
 """
+import hashlib
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
-from _paths import INLINE_CODE, WRITE_INTENT, normalize, path_candidates, resolve
+from _paths import (INLINE_CODE, UNRESOLVED, code_writes, normalize,
+                    resolve, unresolved_target, write_candidates)
 
 # Список защищённых путей. Один список на обе проверки — по пути, собранному
 # разбором, и по упоминанию внутри встроенного кода. Раньше списков было два,
@@ -79,25 +81,6 @@ PROTECTED = [
     (r"(?:^|[^\w.\-])\.mcp\.json(?:$|[^\w\-])",
      "список MCP-серверов: пишущий инструмент мимо матчеров хуков"),
     (r"scripts/unlock\.sh(?:$|[^\w\-])", "выдача пропусков"),
-    # Рабочая часть хука scan-untrusted лежит ВНЕ каталога хуков: сам хук
-    # импортирует find_markers из scripts/scan_untrusted.py и при неудаче
-    # импорта молча подставляет заглушку, возвращающую пустой список. То есть
-    # сканер инъекций выключается правкой файла, который защищён не был,
-    # и выключается тихо — вместе с одноимённым шагом CI.
-    (r"scripts/scan_untrusted\.py(?:$|[^\w\-])",
-     "сканер скрытых инструкций: рабочая часть хука"),
-    # Набор, которым доказывается работа всех остальных механизмов. Его
-    # выхолащивание делает зелёными сразу двоих: шаг CI «Хуки работают так,
-    # как заявлено» и гейт качества — mark-verify считает прогоном сам факт
-    # запуска `scripts/test_*.py`, а не его содержание.
-    #
-    # Цена названа числом: из 42 коммитов, тронувших набор, 34 в том же
-    # коммите трогают уже защищённый путь — там пропуск и так открыт.
-    # Отдельного пропуска потребовали бы 8 коммитов из 42.
-    (r"scripts/test_hooks\.py(?:$|[^\w\-])",
-     "набор, которым доказывается работа механизмов"),
-    (r"scripts/test_review_codex\.py(?:$|[^\w\-])",
-     "набор проверки внешнего ревьюера"),
     # ci.yml — указатель, проверки лежат в этих файлах. Защищать указатель
     # и не защищать цель — та же подмена, что чинится здесь якорями.
     (r"scripts/ci(?:$|[^\w\-])", "тела проверок CI"),
@@ -117,28 +100,20 @@ MENTION = PROTECTED
 # правит другая задача.
 READ_ONLY_TOOLS = ("Read", "NotebookRead", "Grep", "Glob")
 
-# Запуск скрипта выдачи пропусков — именно запуск, а не упоминание. Первая
-# версия ловила имя в любом месте команды и блокировала даже коммит, в тексте
-# которого это имя встречалось. Механизм, дающий ложные тревоги, обходят так же
-# охотно, как дырявый.
-# Признаки записи внутри встроенного кода. Граница репозитория считает любой
-# `python3 -c` намерением записи — там цена ошибки высока, наружу пишут один раз.
-# Здесь та же строгость даёт перегиб: команда, читающая .claude/state/unlock.json,
-# получала отказ наравне с командой, его переписывающей. Читать свои же файлы
-# правил можно, менять — нет.
-INLINE_WRITE = re.compile(
-    r"open\s*\([^)]*['\"][wax]\+?['\"]"          # open(path, 'w'), 'a', 'x'
-    r"|open\s*\([^)]*['\"]r\+['\"]"              # open(path, 'r+') — тоже запись
-    r"|\bmode\s*=\s*['\"][wax]"
-    r"|\.write(?:lines|_text|_bytes)?\s*\("
-    r"|\bwriteFileSync\b|\bappendFileSync\b|\bfs\.\w*[Ww]rite\w*\s*\("
-    r"|\b(?:json|yaml|pickle)\.dump\s*\("
-    r"|\b(?:unlink|remove|rmtree|rename|replace|truncate|mkdir|makedirs|chmod|symlink)\s*\("
-    r"|\bshutil\.\w+\s*\(",
-    re.I)
-
 RUN_UNLOCK = re.compile(
-    r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b")
+    r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b"
+    r"(?P<rest>[^;&|\n]*)")
+# Отвод вывода режима не меняет: `unlock.sh --list 2>&1 | head -3` —
+# всё ещё печать. Именно эта форма и стоит шестым ложным отказом
+# в тикете: координатор смотрел, жив ли пропуск.
+READ_ONLY_MODE = re.compile(r"^\s*(?:--list|--help|-h)?\s*(?:\d*[<>]+\s*\S*\s*)*$")
+
+def issues_unlock(normalized):
+    """Есть ли в команде запуск, который ВЫДАЁТ пропуск."""
+    for m in RUN_UNLOCK.finditer(normalized):
+        if not READ_ONLY_MODE.match(m.group("rest") or ""):
+            return True
+    return False
 
 # Подмена каталога состояния хуков (issue #54). Переменная говорит хуку, где
 # лежит unlock.json, — то есть говорит, ОТКУДА ЧИТАТЬ РАЗРЕШЕНИЯ. Кто её задаёт,
@@ -183,6 +158,23 @@ def protected_hit(text, root):
                 return human
     return None
 
+def refuse(human, cmd, why):
+    """Отказ или пропуск по открытой зоне — одной формой на все ветки.
+
+    Вместе с причиной в журнал уходят длина команды и её отпечаток: журнал
+    пишет `cmd[:300]`, и 21 из 49 уникальных команд в боевом guard.jsonl
+    усечены так, что воспроизвести их нельзя. Приёмка #166 требует число
+    ложных отказов «до и после» — на усечённой выборке оно несопоставимо.
+    """
+    H.confirm(
+        ZONE,
+        "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
+        "Команда: %s\nПочему: %s\nДлина команды: %d, отпечаток: %s"
+        % (human, cmd[:300], why, len(cmd),
+           hashlib.sha1(cmd.encode("utf-8")).hexdigest()[:12]),
+        guard="guard-protected-files",
+    )
+
 def main():
     data = H.read_input()
     tool = data.get("tool_name", "")
@@ -202,7 +194,7 @@ def main():
         # Пропуск себе не выдают. Запуск scripts/unlock.sh из сессии агента
         # запрещён всегда — в том числе при открытой зоне, иначе агент продлевал
         # бы себе разрешение сам, и весь механизм сводился бы к одной команде.
-        if RUN_UNLOCK.search(normalized):
+        if issues_unlock(normalized):
             H.decide(
                 "deny",
                 "Заблокировано хуком guard-protected-files: выдача пропуска из сессии агента.\n"
@@ -225,35 +217,34 @@ def main():
                 guard="guard-protected-files",
             )
 
-        writes = bool(WRITE_INTENT.search(normalized))
-        inline = bool(INLINE_CODE.search(normalized))
-        if not writes and not inline:
-            H.ok()
-        # Встроенный код без единого признака записи — это чтение.
-        if not writes and inline and not INLINE_WRITE.search(normalized):
-            H.ok()
+        writes = write_candidates(cmd)
+        blind = unresolved_target(writes)
 
-        for candidate in path_candidates(cmd):
+        # Цель записи, сведённая к пути, проверяется по списку. Признак записи
+        # больше не берётся по всей строке: он теперь свойство ПОЗИЦИИ, а не
+        # команды. Из-за прежней развязки `rm` по файлу в /tmp вместе
+        # с `git diff` по хуку читались как правка хука — семь из восьми
+        # воспроизводимых ложных отказов боевого журнала.
+        for candidate in writes:
+            if candidate == UNRESOLVED:
+                continue
             human = protected_hit(candidate, root)
             if human:
-                H.confirm(
-                    ZONE,
-                    "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
-                    "Команда: %s" % (human, cmd[:300]),
-                    guard="guard-protected-files",
-                )
+                refuse(human, cmd, "цель записи: %s" % candidate[:120])
 
-        # Путь мог не выделиться в отдельный аргумент — он бывает внутри кавычек
-        # встроенного кода. Здесь ищем упоминание по всей команде, но только когда
-        # намерение записи уже установлено выше.
-        for pattern, human in MENTION:
-            if re.search(pattern, normalized):
-                H.confirm(
-                    ZONE,
-                    "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
-                    "Команда: %s" % (human, cmd[:300]),
-                    guard="guard-protected-files",
-                )
+        # Граница, которая не снимается. Встроенный код разобрать надёжно
+        # нельзя, и упоминание защищённого пути внутри него остаётся записью.
+        # Признаки записи ищутся и в СЫРОЙ команде: normalize снимает кавычки,
+        # а половина шаблона на них и держится — из-за этого
+        # `python3 -c "f = open('CLAUDE.md','w')"` проходил без пропуска.
+        if INLINE_CODE.search(normalized) and code_writes(cmd, normalized):
+            blind = True
+
+        if blind:
+            for pattern, human in MENTION:
+                if re.search(pattern, normalized, re.I):
+                    refuse(human, cmd, "цель записи не разобрана — "
+                                       "упоминание считается правкой")
         H.ok()
 
     for text in H.targets(data):

@@ -385,10 +385,16 @@ CASES = [
     # Механизмы, чья рабочая часть лежит вне каталога хуков. Сканер инъекций
     # импортируется хуком из scripts/ и при неудаче импорта молча подменяется
     # заглушкой; набор проверок делает зелёными сразу шаг CI и гейт качества.
-    ("guard-protected-files.py", "сканер скрытых инструкций выхолащивается",
-     {"tool_name": "Bash", "tool_input": {"command": "echo 'def find_markers(t): return []' > scripts/scan_untrusted.py"}}, "deny"),
-    ("guard-protected-files.py", "набор проверок выхолащивается",
-     {"tool_name": "Bash", "tool_input": {"command": "echo 'CASES = []' > scripts/test_hooks.py"}}, "deny"),
+    # Названная дыра, а не недосмотр: рабочая часть сканера инъекций и набор
+    # проверок под защиту сознательно НЕ взяты — решение координатора.
+    # Новый защищённый путь стоит пропуска каждому, кто правит набор, и нового
+    # пересечения с параллельной веткой. Цена обратного размена — в HOOKS.md,
+    # раздел «Что остаётся дырой». Кейсы стоят затем, чтобы дыра была видна
+    # прогоном, а не только текстом.
+    ("guard-protected-files.py", "сканер скрытых инструкций защитой не накрыт",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'def find_markers(t): return []' > scripts/scan_untrusted.py"}}, "allow"),
+    ("guard-protected-files.py", "набор проверок защитой не накрыт",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'CASES = []' > scripts/test_hooks.py"}}, "allow"),
     ("guard-protected-files.py", "тело проверки CI подменяется",
      {"tool_name": "Bash", "tool_input": {"command": "echo 'exit 0' > scripts/ci/test.sh"}}, "deny"),
     ("guard-protected-files.py", "выбор стека CI подменяется",
@@ -421,6 +427,108 @@ CASES = [
      {"tool_name": "Bash", "tool_input": {"command": "ls -la .claude"}}, "allow"),
     ("guard-protected-files.py", "шаблон задачи читается",
      {"tool_name": "Bash", "tool_input": {"command": "cat .github/ISSUE_TEMPLATE/role-task.yml"}}, "allow"),
+
+    # --- issue #166: признак записи — свойство позиции, а не команды ---
+    # Хук спрашивал у команды два независимых вопроса: «есть ли где-нибудь
+    # признак записи» и «упомянут ли где-нибудь защищённый путь» — и отказывал
+    # на совпадении ответов. Семь из восьми воспроизводимых ложных отказов
+    # боевого журнала — эта развязка. Ниже: каждый экземпляр тикета и каждый
+    # ложный отказ журнала — своим кейсом, и к каждому пара, где та же форма
+    # команды по защищённому пути по-прежнему отклоняется.
+    ("guard-protected-files.py", "правка чужого файла с упоминанием хуков в тексте",
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i '' 's|old|путь .claude/hooks/ теперь общий|' scripts/test_hooks.py"}}, "allow"),
+    ("guard-protected-files.py", "запуск хука с отводом вывода",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{\"tool_name\":\"Bash\"}' | python3 .claude/hooks/guard-scope.py > /tmp/out.json"}}, "allow"),
+    ("guard-protected-files.py", "удаление временного рядом с чтением хука",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -f /tmp/_debug_hook_input.json; git diff --stat .claude/hooks/guard-git.py"}}, "allow"),
+    ("guard-protected-files.py", "запись в журнал, где каталог хуков — предмет рассказа",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'разбор идёт в .claude/hooks/ по одному файлу' >> sessions/karina.md"}}, "allow"),
+    ("guard-protected-files.py", "чтение файла пропусков документом",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nimport json\nd = json.load(open('.claude/state/unlock.json'))\nprint(d)\nPY"}}, "allow"),
+    ("guard-protected-files.py", "глушение вывода рядом с упоминанием пути",
+     {"tool_name": "Bash", "tool_input": {"command": "git fetch origin >/dev/null 2>&1; git log --oneline -3 -- .claude/hooks/"}}, "allow"),
+    ("guard-protected-files.py", "ключ -l у grep не делает команду записью",
+     {"tool_name": "Bash", "tool_input": {"command": "grep -ln docs .github/workflows/*.yml 2>/dev/null"}}, "allow"),
+    ("guard-protected-files.py", "ключ -v у grep не монтирует том",
+     {"tool_name": "Bash", "tool_input": {"command": "grep -rn state_base .claude/hooks/*.py | grep -v _hooklib.py | head -20"}}, "allow"),
+    ("guard-protected-files.py", "чтение хуков с записью в /tmp",
+     {"tool_name": "Bash", "tool_input": {"command": "grep -rn state_base .claude/hooks/*.py | tee /tmp/found.txt"}}, "allow"),
+    ("guard-protected-files.py", "копия хука наружу — чтение, а не правка",
+     {"tool_name": "Bash", "tool_input": {"command": "cp .claude/hooks/guard-git.py /tmp/backup.py"}}, "allow"),
+    ("guard-protected-files.py", "обратная копия — правка",
+     {"tool_name": "Bash", "tool_input": {"command": "cp /tmp/backup.py .claude/hooks/guard-git.py"}}, "deny"),
+
+    # Печать в стандартный поток записью не является — иначе защита журнала
+    # завела бы новый класс ложных отказов на однострочниках, его читающих.
+    ("guard-protected-files.py", "печать журнала в стандартный поток",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import sys; sys.stdout.write(open('.claude/logs/guard.jsonl').read())\""}}, "allow"),
+    ("guard-protected-files.py", "выгрузка пропусков в стандартный поток",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json,sys; json.dump(json.load(open('.claude/state/unlock.json')), sys.stdout)\""}}, "allow"),
+    ("guard-protected-files.py", "выгрузка В файл пропусков — правка",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import json; json.dump({}, open('.claude/state/unlock.json','w'))\""}}, "deny"),
+
+    # Режимы скрипта пропусков. Печать открытых зон — шестой экземпляр тикета.
+    ("guard-protected-files.py", "печать открытых зон разрешена",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh --list"}}, "allow"),
+    ("guard-protected-files.py", "печать открытых зон с отводом вывода",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh --list 2>&1 | head -3"}}, "allow"),
+    ("guard-protected-files.py", "выдача после печати в той же команде ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh --list; bash scripts/unlock.sh protected-files 120 x"}}, "deny"),
+    ("guard-protected-files.py", "ключ печати в тексте причины не делает выдачу печатью",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh protected-files 120 'правим -h'"}}, "deny"),
+    ("guard-protected-files.py", "закрытие зоны досрочно остаётся отказом",
+     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh --revoke protected-files"}}, "deny"),
+
+    # Цель записи, которую разбор не свёл к пути. Правило: «разобрать нельзя»
+    # трактуется в пользу отказа — прежний слепой поиск упоминания остаётся.
+    # Присваивания читаются по всей команде, поэтому временный каталог,
+    # заданный тут же, ложного отказа не даёт.
+    ("guard-protected-files.py", "цель записи через переменную ловится",
+     {"tool_name": "Bash", "tool_input": {"command": "f=.claude/hooks/guard-git.py; echo evil >> \"$f\""}}, "deny"),
+    ("guard-protected-files.py", "временный каталог в переменной ложного отказа не даёт",
+     {"tool_name": "Bash", "tool_input": {"command": "T=/tmp/probe; rm -rf \"$T\" && mkdir -p \"$T\"; shasum -a 256 .claude/hooks/guard-git.py"}}, "allow"),
+    ("guard-protected-files.py", "цель из окружения — упоминание считается правкой",
+     {"tool_name": "Bash", "tool_input": {"command": "echo evil >> \"$UNKNOWN_VAR\"; echo .claude/hooks/guard-git.py"}}, "deny"),
+    ("guard-protected-files.py", "шаблон xargs как цель записи",
+     {"tool_name": "Bash", "tool_input": {"command": "echo .claude/hooks/guard-git.py | xargs -I{} sh -c 'echo evil >> {}'"}}, "deny"),
+    ("guard-protected-files.py", "аргумент eval разбирается как команда",
+     {"tool_name": "Bash", "tool_input": {"command": "eval \"echo evil >> .claude/hooks/guard-git.py\""}}, "deny"),
+    ("guard-protected-files.py", "eval наружу защиты не касается",
+     {"tool_name": "Bash", "tool_input": {"command": "eval \"echo x >> /tmp/out.txt\""}}, "allow"),
+
+    # Формы записи, проходившие без пропуска до этой задачи. Каждая найдена
+    # прогоном: две — при разборе, три — ревьюером результата.
+    ("guard-protected-files.py", "открытие на запись без последующей записи",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"f = open('CLAUDE.md','w')\""}}, "deny"),
+    ("guard-protected-files.py", "режим записи ключевым словом",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import io; io.open('CLAUDE.md', mode='w')\""}}, "deny"),
+    ("guard-protected-files.py", "встроенный код уходит в оболочку",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import os; os.system('rm .claude/hooks/guard-git.py')\""}}, "deny"),
+    ("guard-protected-files.py", "встроенный код запускает подпроцесс",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"import subprocess; subprocess.run(['rm','.claude/hooks/guard-git.py'])\""}}, "deny"),
+    ("guard-protected-files.py", "запись через обещания файловой системы",
+     {"tool_name": "Bash", "tool_input": {"command": "node -e \"require('fs').promises.writeFile('CLAUDE.md','')\""}}, "deny"),
+    ("guard-protected-files.py", "поиск с удалением по каталогу хуков",
+     {"tool_name": "Bash", "tool_input": {"command": "find .claude/hooks -name '*.py' -delete"}}, "deny"),
+    ("guard-protected-files.py", "поиск без удаления разрешён",
+     {"tool_name": "Bash", "tool_input": {"command": "find .claude/hooks -name '*.py'"}}, "allow"),
+    ("guard-protected-files.py", "распаковка поверх каталога хуков",
+     {"tool_name": "Bash", "tool_input": {"command": "tar -xzf /tmp/evil.tar -C .claude/hooks"}}, "deny"),
+    ("guard-protected-files.py", "просмотр архива разрешён",
+     {"tool_name": "Bash", "tool_input": {"command": "tar -tzf /tmp/hooks.tar"}}, "allow"),
+    # Жёсткая ссылка не копия: правка второго конца меняет первый, inode тот же.
+    ("guard-protected-files.py", "жёсткая ссылка на хук",
+     {"tool_name": "Bash", "tool_input": {"command": "ln .claude/hooks/guard-git.py backup/alias"}}, "deny"),
+    ("guard-protected-files.py", "символьная ссылка на хук",
+     {"tool_name": "Bash", "tool_input": {"command": "ln -s .claude/hooks/guard-git.py backup/alias"}}, "deny"),
+    ("guard-protected-files.py", "откат хука из истории по пути",
+     {"tool_name": "Bash", "tool_input": {"command": "git checkout HEAD~3 -- .claude/hooks/guard-git.py"}}, "deny"),
+    ("guard-protected-files.py", "восстановление каталога хуков из истории",
+     {"tool_name": "Bash", "tool_input": {"command": "git restore --source=HEAD~3 .claude/hooks/"}}, "deny"),
+    ("guard-protected-files.py", "смена ветки правкой файла не считается",
+     {"tool_name": "Bash", "tool_input": {"command": "git checkout main"}}, "allow"),
+    ("guard-protected-files.py", "правка строчным редактором",
+     {"tool_name": "Bash", "tool_input": {"command": "ed CLAUDE.md"}}, "deny"),
 
     # --- issue #54: перенаправление состояния — это и есть выдача пропуска ---
     # Пара к сужению: набор получил право уводить состояние к себе, значит
