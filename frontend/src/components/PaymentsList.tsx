@@ -8,6 +8,11 @@ import { CardBoundary } from './CardBoundary'
 // раскрытие снимает line-clamp (design/README.md, «Края поведения»).
 // Кнопка появляется по факту обрезки (замер элемента), а не по числу
 // символов: обрезает CSS, и только он знает, что обрезал.
+//
+// Значение лежит в <bdi> (U7, задача #180): управляющий символ направления
+// письма из description иначе переворачивает соседний текст карточки, и
+// показанное расходится с хранимым. Само значение не фильтруется и не
+// изменяется — изолируется окружение, показ «как есть» (F11/U6) сохраняется.
 function Description({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   const [clamped, setClamped] = useState(false)
@@ -26,7 +31,7 @@ function Description({ text }: { text: string }) {
   return (
     <>
       <p ref={ref} className={`desc${open ? ' desc--open' : ''}`}>
-        {text}
+        <bdi>{text}</bdi>
       </p>
       {(clamped || open) && (
         <button type="button" className="desc-toggle" onClick={() => setOpen(!open)}>
@@ -49,11 +54,22 @@ function PaymentCard({ p }: { p: Payment }) {
         <span className="minor mono">{p.amount_minor}</span>
         <span className={`status status--${p.status}`}>{p.status}</span>
       </div>
+      {/*
+        U7: каждое значение, пришедшее от сервера, лежит в своём изоляте.
+        Метка «status_reason:» — наша, она остаётся снаружи: изолируется
+        значение, а не подпись к нему.
+      */}
       <div className="meta">
-        <span className="chip">{p.id}</span>
-        <span className="mono">{p.order_id}</span>
+        <span className="chip">
+          <bdi>{p.id}</bdi>
+        </span>
+        <span className="mono">
+          <bdi>{p.order_id}</bdi>
+        </span>
         {p.status_reason !== null && (
-          <span className="chip">status_reason: {p.status_reason}</span>
+          <span className="chip">
+            status_reason: <bdi>{p.status_reason}</bdi>
+          </span>
         )}
       </div>
       {p.description !== null && p.description !== '' && <Description text={p.description} />}

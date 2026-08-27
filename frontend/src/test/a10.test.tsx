@@ -28,8 +28,19 @@ describe('A10: description выводится как текст', () => {
     expect(container.querySelector('b')).toBeNull()
   })
 
+  // Запрос по точному тексту здесь больше не работает — и не должен: значение
+  // уехало в <bdi> (U7, #180), а `getNodeText` в testing-library склеивает
+  // только ПРЯМЫЕ текстовые узлы элемента. Метка и значение проверяются
+  // раздельно, потому что раздельны и в разметке: изолируется значение,
+  // а не подпись к нему.
   it('status_reason показан, когда не null', () => {
-    render(<PaymentsList merchant="demo-shop-a" payments={[hostile]} note={null} />)
-    expect(screen.getByText('status_reason: test_amount_rule')).toBeInTheDocument()
+    const { container } = render(
+      <PaymentsList merchant="demo-shop-a" payments={[hostile]} note={null} />,
+    )
+    const chip = Array.from(container.querySelectorAll('.chip')).find((c) =>
+      c.textContent?.startsWith('status_reason:'),
+    )
+    expect(chip?.textContent).toBe('status_reason: test_amount_rule')
+    expect(screen.getByText('test_amount_rule').tagName).toBe('BDI')
   })
 })

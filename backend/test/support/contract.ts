@@ -158,6 +158,29 @@ export function requestBodyErrors(body: unknown): string {
     .join('; ');
 }
 
+/**
+ * Вердикт схемы без исключения — для сверок, где интересен сам вердикт,
+ * а не падение: сверка заголовков (#180) сравнивает «что говорит контракт»
+ * с «что сделал сервер», и обе стороны обязаны быть данными, а не броском.
+ */
+export function matchesSchema(pointer: string, data: unknown): boolean {
+  return validatorFor(pointer)(data);
+}
+
+/** Схема параметра контракта по его имени в `components/parameters`. */
+export function parameterSchemaPointer(name: string): string {
+  const parameters = (contract['components'] as Record<string, unknown>)['parameters'] as
+    | Record<string, unknown>
+    | undefined;
+  if (!parameters?.[name]) {
+    throw new Error(
+      `Контракт не описывает параметр ${name}. Сверка заголовков без него ` +
+        'проверяет пустоту — это отказ, а не пропуск.',
+    );
+  }
+  return `/components/parameters/${name}/schema`;
+}
+
 export function assertValidAgainst(pointer: string, data: unknown, what: string): void {
   const validate = validatorFor(pointer);
   if (validate(data)) return;
