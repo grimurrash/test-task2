@@ -921,6 +921,15 @@ BAD_INPUTS = [
      {"guard-scope.py": "deny"}, "allow"),
 ]
 
+# Сбои, где решение принято, но до трубы дойти уже не может. Штатного
+# ответа тут быть не должно: остаётся код 2 — он блокирует и без причины.
+# Опаснее прочих тем, что процесс завершается штатно, ошибки нет, а решения
+# на трубе нет: код 0 с пустым выводом — это пропуск.
+LOST_DECISION = [
+    ("closefd", "хук закрыл дескрипторы после решения"),
+    ("lostdecision", "решение принято, но не напечатано"),
+]
+
 def pretooluse_calls():
     """Буквальные строки запуска хуков PreToolUse из settings.json."""
     with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
@@ -1008,6 +1017,32 @@ def broken_copy(hook, fault):
         with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
             fh.write(head + "\nsys.excepthook = sys.__excepthook__\n" + sep +
                      "    raise RuntimeError(%r)\n" % FAULT + tail)
+        return d
+    if fault == "closefd":
+        # Дескрипторы запускателя живут в том же пространстве, что и
+        # дескрипторы хука, и хук может их затереть, не зная об их
+        # существовании.
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + sep +
+                     "    import json as _j, os as _o\n"
+                     "    _o.write(1, _j.dumps({'hookSpecificOutput': {"
+                     "'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',"
+                     " 'permissionDecisionReason': %r}}).encode())\n"
+                     "    H.PRINTED[0] = True\n"
+                     "    _o.closerange(3, 64)\n" % FAULT + tail)
+        return d
+    if fault == "lostdecision":
+        # Хук утверждает, что решил, а на трубе пусто. Без сверки это
+        # выглядело бы как «проверка прошла молча».
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + sep + "    H.PRINTED[0] = True\n"
+                     "    return   # %s\n" % FAULT + tail)
         return d
     if fault == "child":
         # Подмена sys.stdout такого вывода не видит: дочерний процесс пишет
@@ -1154,6 +1189,22 @@ def check_hook_failures(log_path):
                      decision_of(bad), decision_of(good)))
     finally:
         shutil.rmtree(clean, ignore_errors=True)
+
+    print("    — решение принято, но до трубы не дошло")
+    for fault, title in LOST_DECISION:
+        for hook in hooks:
+            d = broken_copy(hook, fault)
+            try:
+                proc = run(hook, HARMLESS, hooks_dir=d, launcher=True)
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
+            # Здесь штатного ответа быть не может: остаётся запасной барьер.
+            # Код 0 с пустым выводом означал бы пропуск — это и проверяется.
+            ok = proc.returncode == 2 and decision_of(proc) == "deny"
+            failures += 0 if ok else 1
+            print("    %s %-24s %-38s код=%d решение=%s"
+                  % ("✓" if ok else "✗", hook[:-3], title, proc.returncode,
+                     decision_of(proc)))
 
     print("    — сбой не в коде хука, а на входе в него")
     for title, raw, payload, per_hook, default in BAD_INPUTS:
