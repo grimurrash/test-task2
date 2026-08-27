@@ -90,6 +90,17 @@ def substitutions(text):
 
 ENV_HOME = re.compile(r"\$\{HOME\}|\$HOME\b|\$\{?USERPROFILE\}?\b")
 QUOTES = str.maketrans("", "", "\"'")
+
+# `$'…'` и `$"…"` — кавычки оболочки, а не имя переменной (issue #103, пункт 2).
+# Снятие кавычек оставляло токен `$/outside/dir`: он перестаёт быть абсолютным,
+# приклеивается к корню репозитория, и путь наружу становится «внутренним».
+# `rm -rf $'<наружу>'` проходил границу и в main, и в ветке #53.
+#
+# Названная цена: escape-последовательности внутри (`$'\x2f'`, `$'\057'`)
+# не раскрываются. Раскрывать их — писать собственный разбор ANSI-C, то есть
+# заводить вторую реализацию правил оболочки рядом с лексером. Записано
+# в docs/HOOKS.md.
+ANSI_QUOTE = re.compile(r"\$(?=['\"])")
 SPLIT = re.compile(r"[\s;|&()]+")
 REDIRECT = re.compile(r"(?<![0-9<>])>>?\s*(?P<path>(?:[\"'][^\"']+[\"'])|[^\s;|&<>]+)")
 
@@ -98,7 +109,26 @@ REDIRECT = re.compile(r"(?<![0-9<>])>>?\s*(?P<path>(?:[\"'][^\"']+[\"'])|[^\s;|&
 # отдельном хуке, чтобы граница репозитория и защита файлов правил смотрели
 # на команду одинаково: два разных списка разойдутся при первой же правке.
 WRITE_INTENT = re.compile(
+    # Приставка перед `>` — это номер дескриптора (`2>`, `1>>`), а не повод
+    # не считать перенаправление перенаправлением (issue #103, пункт 3).
+    # Прежний запрет цифры слева означал, что `echo x 2> <наружу>` выходил
+    # из хука ДО разбора: правило, починенное в #97, до такой команды
+    # не доживало. `<` слева остаётся исключённым — это `<>`, чтение-запись.
+    #
+    # Форма без приставки остаётся ровно такой, какой была: `&` в её исключение
+    # добавлять нельзя. Приставку-дескриптор здесь и так отсекает соседний
+    # lookbehind, зато `>&файл` — это bash-форма записи ОБОИХ потоков в файл,
+    # тождественная `&>файл`, и она уходила из-под признака целиком. Найдено
+    # ревьюером результата, проверено исполнением: файл создаётся.
+    #
+    # Форма С приставкой добавлена отдельной альтернативой и сужена дважды:
+    # справа не `&` (`2>&1` — дублирование дескриптора, а не запись) и цель
+    # не в каталоге устройств (глушение вывода). Без этих двух сужений признак
+    # записи срабатывал почти на каждой команде с отводом stderr — замерено
+    # ревьюером плана сразу на трёх хуках. Возврат из каталога устройств
+    # точками (`2> /dev/../наружу`) сужение не обходит: он исключён явно.
     r"(?<![0-9<>])>>?(?![>])"                                  # перенаправление вывода
+    r"|(?<=[0-9])>>?(?![>&])(?!\s*/dev/(?![^\s]*\.\.))"        # `2> файл`, но не в устройство
     r"|\b(?:rm|rmdir|unlink|mv|cp|dd|truncate|shred|touch|mkdir|install|rsync|scp)\b"
     r"|\b(?:tee|ln)\b"
     r"|\b(?:chmod|chown|chgrp|xattr)\b"
@@ -179,6 +209,7 @@ def normalize(text):
         return ""
     out = strip_heredocs(text)
     out = ENV_HOME.sub(HOME, out)
+    out = ANSI_QUOTE.sub("", out)
     out = out.translate(QUOTES)
     out = re.sub(r"(?:^|(?<=[\s=:]))~(?=/|$)", HOME, out)
     return out
@@ -384,7 +415,18 @@ HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 WRAPPERS = {
     "sudo", "env", "command", "exec", "nice", "ionice", "timeout", "stdbuf",
     "nohup", "setsid", "busybox", "xargs", "time", "npx", "bunx", "uv",
+    "flock",
 }
+
+# Обёртки, у которых первый НЕключевой аргумент принадлежит им самим:
+# длительность у `timeout`, файл блокировки у `flock`.
+WRAPPER_TAKES_ARG = {"timeout", "flock"}
+
+# Ключи обёрток, у которых есть собственное значение. Без их учёта именем
+# команды стадии становилось само значение: у `nice -n 5 bash -c "…"` разбор
+# видел стадию «5», не опознавал её как оболочку и не разбирал код внутри
+# кавычек. Найдено ревьюером плана по issue #103 на четырёх формах сразу.
+WRAPPER_FLAG_WITH_VALUE = {"-n", "-c", "-u", "-g", "-p", "-P", "-I", "-w"}
 
 # Потребители, ИСПОЛНЯЮЩИЕ тело документа. Список неполон принципиально,
 # поэтому решение построено от обратного: тело считается данными только когда
@@ -407,10 +449,12 @@ DATA_SINKS = {
     "curl", "wget", "mail", "sendmail", "base64", "tr", "fold",
 }
 
-def command_word(tokens):
-    """Имя программы стадии: пропускает обёртки, их ключи, присваивания
-    переменных и разделитель `--`. Возвращает пустую строку, если не нашлось."""
+def command_at(tokens):
+    """(имя программы стадии, индекс её токена). Пропускает обёртки, их ключи
+    со значениями, присваивания переменных и разделитель `--`. Не нашлось —
+    ("", -1)."""
     i = 0
+    wrapper = ""
     while i < len(tokens):
         tok = tokens[i]
         if tok in STAGE_OPS or tok == "--":
@@ -421,18 +465,85 @@ def command_word(tokens):
             continue
         if tok.startswith("-"):
             i += 1                      # ключ обёртки
+            if wrapper and tok in WRAPPER_FLAG_WITH_VALUE and i < len(tokens):
+                i += 1                  # …и его собственное значение
             continue
         name = os.path.basename(tok).lower()
         if name in WRAPPERS:
+            wrapper = name
             i += 1
-            # у timeout первый неключевой аргумент — длительность
-            if name == "timeout":
+            # У части обёрток первый неключевой аргумент принадлежит им самим:
+            # у `timeout` это длительность, у `flock` — файл блокировки.
+            if name in WRAPPER_TAKES_ARG:
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
                 i += 1
             continue
-        return name
-    return ""
+        return name, i
+    return "", -1
+
+def command_word(tokens):
+    """Имя программы стадии. Пустая строка, если не нашлось."""
+    return command_at(tokens)[0]
+
+# Команды, которые тело документа только ПЕРЕДАЮТ дальше по конвейеру, но сами
+# stdin не исполняют. Нужны затем, чтобы `gh pr create --body-file - <<'BODY'
+# 2>&1 | tail -3` не считался кодом: получатель документа — `gh`, а `tail`
+# ниже по конвейеру ничего не исполняет. Прежняя проверка отказывала любому
+# конвейеру целиком, и тело pull request проверялось как команда — два ложных
+# отказа из девятнадцати за 26 августа отсюда (issue #103).
+#
+# Список неполон принципиально и стоит на стороне отказа: незнакомая команда
+# ниже по конвейеру оставляет тело под проверкой.
+# `sed` и `jq` сюда НЕ входят, хотя выглядят фильтрами: у обоих есть ключ,
+# читающий ПРОГРАММУ из stdin (`sed -f -`, `jq -f -`), а у sed есть команда
+# `w`, пишущая файл. `less` и `more` тоже нет — они исполняют LESSOPEN.
+# Ревьюер плана подал документ с телом «1w <путь наружу>» через `sed -f -`
+# и проверил запуском, что файл действительно создаётся: на main отказ,
+# со списком пошире — проход, причём полный: признав тело данными, хук теряет
+# и признак встроенного кода, и выходит ДО разбора путей.
+#
+# Тот же класс, что флаг `--rm`, случайно совпавший с командой удаления:
+# проверка обязана держаться на правиле, а не на репутации имени.
+PIPE_SAFE = {
+    "tail", "head", "wc", "cat", "sort", "uniq", "tr", "cut", "nl", "rev",
+    "grep", "egrep", "fgrep", "rg", "tee", "column", "fold",
+    "base64", "xxd", "strings", "tac", "expand", "unexpand",
+}
+
+def heredoc_receiver(opening_line):
+    """Имя команды, которой достанется тело документа. Пустая строка, если
+    определить нельзя.
+
+    Получатель — команда ТОЙ стадии, в которой стоит `<<`, а не первой стадии
+    строки. `command_word` смотрел на всю строку и у `mkdir -p docs/roles &&
+    cat > docs/roles/x.md <<'MD'` возвращал `mkdir`: тело не признавалось
+    данными и текст, который команда пишет в файл, проверялся как команда.
+    Найдено на девятнадцати настоящих отказах 26 августа (issue #103).
+
+    Конвейер после документа разрешён, только если ВСЕ стадии ниже — из
+    `PIPE_SAFE`. `cat <<'EOF' | bash` по-прежнему не считается данными: тело
+    уходит в bash и исполняется.
+    """
+    toks = tokenize(opening_line)
+    if not toks:
+        return ""                       # не разобрали — не вырезаем
+    stages = split_stages(toks)
+    here = None
+    for k, stage in enumerate(stages):
+        if any(t in ("<<", "<<-") for t in stage):
+            here = k
+            break
+    if here is None:
+        return ""
+    for stage in stages[here + 1:]:
+        if not stage:
+            continue
+        downstream = command_word(stage)
+        base = re.sub(r"[\d.]+$", "", downstream)
+        if downstream not in PIPE_SAFE and base not in PIPE_SAFE:
+            return ""                   # получателя не разобрать — не вырезаем
+    return command_word(stages[here])
 
 def heredoc_body_is_data(opening_line):
     """True, если тело документа получатель запишет, а не исполнит.
@@ -442,17 +553,7 @@ def heredoc_body_is_data(opening_line):
     `timeout 10`, `exec`, разделитель `--`) его отодвигали — тело исполнялось,
     но считалось данными. Найдено двумя кругами внешнего ревью.
     """
-    toks = tokenize(opening_line)
-    if not toks:
-        return False                    # не разобрали — не вырезаем
-
-    # Конвейер: тело уходит на stdin ПОСЛЕДНЕЙ команды, а не первой.
-    # `cat <<'EOF' | bash` — документ для bash, а не для cat. Третий круг
-    # внешнего ревью: тело вырезалось как данные и код исчезал из проверки.
-    if "|" in toks:
-        return False                    # получателя не разобрать — не вырезаем
-
-    name = command_word(toks)
+    name = heredoc_receiver(opening_line)
     if not name:
         return False
 
@@ -683,60 +784,435 @@ def container_scope_tokens(tokens):
             host.append(tok)
     return True, host
 
-def path_candidates(command):
+# ─────────────────────────────────────────────────────────────────────────────
+# Природа строки (issue #103).
+#
+# До этой правки разбор снимал кавычки ДО токенизации, и с этого места строка
+# теряла природу: содержимое кавычек, тело встроенного кода и аргументы
+# командной строки становились одним потоком токенов. Правило, верное для
+# одного, применялось ко всем — и все девятнадцать отказов guard-scope
+# за 26 августа объясняются этим одним местом:
+#
+#   grep -o "…<code>[^<]*</code>"        → токен `/code`
+#   echo "=== / ==="                     → токен `/`
+#   awk '/^worktree /{print $2}'         → токен `/^worktree`
+#   (b - a).total_seconds() / 60,        → токен `/60,`
+#
+# Ни одна из этих строк не является путём оболочки. Природ четыре:
+#
+#   путь оболочки            — токен командной строки, позиция известна;
+#   содержимое встроенного кода — путь живёт ВНУТРИ строкового литерала,
+#                                снаружи стоит выражение;
+#   чужая файловая система   — стадия docker/podman, разбирается отдельно;
+#   литерал с экранированием — `$'…'`, снимается в normalize/ANSI_QUOTE.
+#
+# Половина решения даётся даром: не снимать кавычки до токенизации. shlex
+# в posix-режиме снимает их сам по токену и при этом СОХРАНЯЕТ границу —
+# содержимое кавычек остаётся одним токеном.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Операторы перенаправления вывода целиком, а не только `>` и `>>`. Цели
+# собирались сравнением ровно с двумя формами, поэтому `&>` и `>|` цели
+# не давали — в контейнерной стадии, где общий обход токенов отключён,
+# это был прямой пропуск (issue #103, пункт 3). Приставка-дескриптор (`2>`)
+# приходит отдельным токеном, поэтому её здесь нет.
+# `>&` здесь есть: `>&файл` — запись обоих потоков. У `2>&1` целью окажется
+# номер дескриптора, и его отсеивает общий фильтр формы токена.
+REDIRECT_OPS = {">", ">>", ">|", "&>", "&>>", ">&"}
+
+# Оболочки: аргумент `-c` — снова командная строка, разбирается теми же
+# правилами рекурсивно. Это то, на чём держится отказ `sh -c 'chmod -R 777 / 2'`.
+SHELL_NAMES = {"sh", "bash", "zsh", "ksh", "dash", "ash", "fish", "csh"}
+
+# Языки, у которых аргумент `-c`/`-e`/`-r` — код, а не команда оболочки.
+CODE_NAMES = {
+    "python", "node", "deno", "bun", "perl", "ruby", "php", "osascript",
+    "lua", "rscript", "tclsh", "pwsh", "powershell", "julia",
+}
+
+# У awk программа — первый позиционный аргумент.
+AWK_NAMES = {"awk", "gawk", "mawk", "nawk"}
+
+# Ключ, после которого идёт код: `-c`, `-e`, `-r`, слитные формы вроде `-ne`
+# и `-lane`. Список ключей у каждого языка свой, поэтому признак структурный:
+# ключ заканчивается буквой, которой языки обозначают «дальше идёт код».
+CODE_FLAG = re.compile(r"^-[A-Za-z]*[ceEr]$|^--(?:eval|command)$")
+SHELL_FLAG = re.compile(r"^-[a-z]*c$")
+
+# Строковый литерал внутри кода. Путь в коде живёт здесь и больше нигде:
+# снаружи литерала стоит выражение, и слэш там — деление или регулярное
+# выражение. Формы взяты общие для python, js, ruby, perl, php.
+STRING_LITERAL = re.compile(
+    r"'''(?P<b1>.*?)'''"
+    r"|\"\"\"(?P<b2>.*?)\"\"\""
+    r"|'(?P<b3>(?:\\.|[^'\\])*)'"
+    r"|\"(?P<b4>(?:\\.|[^\"\\])*)\""
+    r"|`(?P<b5>(?:\\.|[^`\\])*)`",
+    re.S)
+
+# Что остаётся путём ВНЕ литерала. Сужение принципиально одностороннее:
+# многосегментный абсолютный путь и путь от точки сохраняются, потому что
+# бывают формы кода, где строка не в кавычках (`perl -e "unlink q(/outside/x)"`).
+# Односегментный `/слово` снаружи литерала — это деление, флаги регулярного
+# выражения или знак пунктуации лексера.
+CODE_PATH = re.compile(
+    r"^(?:/+[^/\s]+){2,}/*$"                  # абсолютный, от двух сегментов
+    r"|^~/|^\.{1,2}/"                          # от тильды и от точки
+    r"|^\$\{?(?:HOME|USERPROFILE)\}?(?:/|$)")  # домашний каталог
+
+# Односегментный токен со слэшем: `/feature`, `/code`, `/Отменить`, `/слово:`.
+# Такой токен — путь только в позиции цели записи; в остальных позициях это
+# имя слэш-команды, флаги регулярного выражения или слово из русского текста
+# после слэша. 59 односегментных «путей» на 1510 отказов за три дня.
+ONE_SEGMENT = re.compile(r"^/[^/]+/?$")
+
+# Ключи, чей аргумент — файл вывода, у команд, которые признак записи УЖЕ
+# называет поимённо. Без них сужение односегментного токена отменяло бы
+# собственный признак записи: `curl -o /newfile` на main отклонялся, а после
+# сужения проходил бы — цель не перенаправление и не аргумент файловой команды.
+# Список ровно совпадает с тем, что перечислено в WRITE_INTENT: команды,
+# чья цель записи стоит позиционно и в WRITE_INTENT не названа, — предмет #108.
+#
+# Привязка к имени команды обязательна: у `grep -o` тот же ключ означает
+# «печатать только совпадение», и без привязки шаблон grep снова стал бы целью.
+OUTPUT_FLAGS = {
+    "curl": {"-o", "--output"},
+    "wget": {"-O", "--output-document"},
+}
+
+def ansi_literals(text):
+    """Текст, в котором `$'…'` стал обычным литералом (issue #103, пункт 2)."""
+    return ANSI_QUOTE.sub("", text or "")
+
+def split_heredocs(command):
+    """(команда без тел документов, [(тело, природа), …]).
+
+    Отличается от `strip_heredocs` тем, что вырезает ВСЕ закрытые документы,
+    а не только «пишущие», и возвращает тела вместе с их природой: тело,
+    отданное python или node, — код; тело, отданное оболочке, `make` или
+    незнакомой команде, — командная строка. Незнакомая команда трактуется
+    в пользу отказа: её тело остаётся под обычным разбором.
+
+    Тело «пишущего» получателя (`cat > file`) не возвращается вовсе — это
+    данные, которые команда пишет, а не путь, по которому она пишет.
+    """
+    if "<<" not in (command or ""):
+        return command or "", []
+    lines = (command or "").split("\n")
+    out, bodies = [], []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        delim = heredoc_delimiter(line)
+        i += 1
+        if not delim:
+            continue
+        end = i
+        while end < len(lines) and lines[end].strip() != delim:
+            end += 1
+        if end >= len(lines):
+            continue          # метка конца не найдена — тело не вырезаем
+        body = "\n".join(lines[i:end])
+        if heredoc_body_is_data(line):
+            # Метка в кавычках отключает подстановки — тело буквально данные.
+            # Без кавычек оболочка исполняет `$(…)` ДО того, как получатель
+            # их запишет, поэтому подстановки сохраняются.
+            if not heredoc_delimiter_quoted(line):
+                for inner in substitutions(body):
+                    out.append(inner)
+        else:
+            name = heredoc_receiver(line)
+            base = re.sub(r"[\d.]+$", "", name)
+            nature = "code" if (name in CODE_NAMES or base in CODE_NAMES) else "shell"
+            bodies.append((body, nature))
+        i = end + 1
+    return "\n".join(out), bodies
+
+def inline_code_args(tokens):
+    """{индекс токена: природа} для аргументов, которые являются кодом."""
+    name = command_word(tokens)
+    base = re.sub(r"[\d.]+$", "", name)
+    if name in SHELL_NAMES or base in SHELL_NAMES:
+        flag, nature = SHELL_FLAG, "shell"
+    elif name in CODE_NAMES or base in CODE_NAMES:
+        flag, nature = CODE_FLAG, "code"
+    elif name in AWK_NAMES or base in AWK_NAMES:
+        return _awk_program(tokens)
+    else:
+        return {}
+    out = {}
+    for i, tok in enumerate(tokens):
+        if flag.match(tok or "") and i + 1 < len(tokens):
+            out[i + 1] = nature
+    return out
+
+def _awk_program(tokens):
+    """Программа awk — первый позиционный аргумент после имени и ключей.
+
+    `awk '/^worktree /{print $2}'` давал кандидата `/^worktree`: программа
+    разрезалась по пробелам, и регулярное выражение становилось путём.
+    """
+    seen_name = False
+    skip = False
+    for i, tok in enumerate(tokens):
+        if skip:
+            skip = False
+            continue
+        if not seen_name:
+            if os.path.basename(tok or "").lower() in AWK_NAMES:
+                seen_name = True
+            continue
+        if tok in ("-v", "-f", "-F"):
+            skip = True
+            continue
+        if (tok or "").startswith("-"):
+            continue
+        if tok in STAGE_OPS or tok in REDIRECT_OPS:
+            break
+        return {i: "code"}
+    return {}
+
+def _plain_candidate(token):
+    """Токен похож на путь по форме, безотносительно позиции.
+
+    Домашний каталог считается путём без слэша: `rm -rf $HOME`, `mv x ~`.
+    Раньше это держалось на том, что `normalize` разворачивал `$HOME` и `~`
+    ДО разбора; теперь разворачивает `resolve` — по токену, и токен надо
+    сначала сохранить. Найдено ревьюером плана по issue #103 на девяти формах
+    сразу, все настоящие удаления и перемещения в домашний каталог.
+    """
+    if not token or token.startswith("-"):
+        return False
+    if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
+        return False
+    if ENV_HOME.search(token) or token == "~" or token.startswith("~/"):
+        return True
+    return "/" in token or token in (".", "..")
+
+def code_candidates(code, depth=0):
+    """Пути внутри содержимого встроенного кода.
+
+    Литерал из ОДНОГО токена — путь целиком, и позиция здесь ни при чём:
+    у него нет ни имени команды, ни цели перенаправления. Остаётся правило
+    об односегментном токене — то же самое, что в командной строке: `/gm`
+    и `/karina`, которых нет на диске, это флаги регулярного выражения
+    и имя слэш-команды, а не путь. Многосегментный (`/outside/file`)
+    и существующий (`/etc`) проверяются по-прежнему.
+
+    Литерал из нескольких токенов разбирается как командная строка: это
+    сохраняет отказ на `os.system('chmod -R 777 / 2')` и снимает отказ
+    на строке документации, где `/karina` стоит среди слов.
+
+    Вне литералов остаётся только многосегментный абсолютный путь: формы
+    вроде `perl -e "unlink q(/outside/x)"` кавычек не имеют, и терять их
+    нельзя.
+    """
+    if depth > MAX_DEPTH:
+        return list(DEPTH_EXCEEDED)
+    out = []
+    for m in STRING_LITERAL.finditer(code or ""):
+        body = next((g for g in m.groups() if g is not None), "")
+        toks = tokenize(body)
+        if len(toks) == 1:
+            if _plain_candidate(toks[0]) and _positional_path(toks[0], ""):
+                out.append(toks[0])
+        elif toks:
+            out.extend(path_candidates(body, depth + 1))
+    for tok in tokenize(STRING_LITERAL.sub(" ", code or "")):
+        if CODE_PATH.match(tok or ""):
+            out.append(tok)
+    return out
+
+# Команды, у которых цель записи стоит ПОЗИЦИОННО и которые признак записи
+# уже называет поимённо. `FS_COMMANDS` их не содержит, и без этого списка
+# сужение односегментного токена отменяло бы собственный признак записи:
+# `git init <новый>`, `git clone … <новый>`, `patch -d <каталог>` на main
+# отклонялись, а после сужения проходили бы. Найдено ревьюером плана.
+#
+# Команды, чья цель записи позиционна и в WRITE_INTENT НЕ названа
+# (`tar -C`, `unzip -d`, `openssl -out`, `dd of=`), — предмет issue #108.
+WRITE_TARGET_SUBS = {
+    "git": ("clone", "init", "worktree"),
+}
+
+def _write_target_stage(tokens, name):
+    """Стадия, у которой любой позиционный аргумент — цель записи."""
+    if name in FS_COMMANDS or name == "patch":
+        return True
+    subs = WRITE_TARGET_SUBS.get(name)
+    return bool(subs) and any(tok in subs for tok in tokens)
+
+def _cd_stage(name):
+    """Стадия только меняет каталог — её аргумент целью записи не бывает."""
+    return name in ("cd", "pushd", "chdir")
+
+def _positional_path(token, name, target_stage=False):
+    """Односегментный токен считается путём только в позиции цели записи.
+
+    Гипотеза координатора по issue #103, проверенная на девятнадцати настоящих
+    отказах. Три условия сразу: ровно один сегмент, такого пути нет на диске,
+    позиция — не цель записи (`target_stage` — стадией командует команда,
+    пишущая по позиционному аргументу; цели перенаправления собираются
+    отдельно и сюда не доходят). `/Users`, `/etc`, `/tmp` существуют
+    и проверяются по-прежнему; `echo x > /newfile` — цель перенаправления
+    и тоже проверяется.
+
+    Голые `.` и `..` выпадают только у команды смены каталога. Первая версия
+    правила выбрасывала их у всякой команды не из `FS_COMMANDS`, и ревьюер
+    плана показал цену: `git init ..`, `git clone … ..`, `patch -d ..`
+    переставали проверяться. Ради формы `cd ..` — той единственной, что дала
+    ложный отказ, — сужение и делается, ею и ограничено.
+
+    Шаблон со звёздочкой из-под правила выведен явно. Один раз правило против
+    ложной тревоги уже накрыло glob от корня и объявило `rm -rf /*` «не путём»;
+    здесь `/*` и `/**` остаются кандидатами независимо от существования —
+    оболочка раскроет их в настоящие пути.
+    """
+    if target_stage:
+        return True
+    if token in (".", ".."):
+        return not _cd_stage(name)
+    if "*" in token or "?" in token:
+        return True
+    if not ONE_SEGMENT.match(token):
+        return True
+    return os.path.exists(token)
+
+def _stage_candidates(tokens, depth=0):
+    """Кандидаты одной стадии командной строки."""
+    if not tokens:
+        return []
+    found = []
+    targets = set()
+    # Перенаправления реальны в любой стадии, включая docker: вывод пишется
+    # на хост, а не в контейнер. Цель дублирования дескриптора (`2>&1`) — номер,
+    # а не файл, и она отсеивается здесь же, чтобы не уходить в protected_hit
+    # и в разбор правки кода лишним кандидатом.
+    i = 0
+    while i < len(tokens):
+        if tokens[i] in REDIRECT_OPS and i + 1 < len(tokens):
+            if not DIGITS_ONLY.match(tokens[i + 1] or ""):
+                found.append(tokens[i + 1])
+            targets.add(i + 1)
+            i += 2
+            continue
+        i += 1
+    is_container, host_paths = container_scope_tokens(tokens)
+    if is_container:
+        # Остальные аргументы описывают файловую систему контейнера;
+        # проверять в ней нечего. Пути хоста собраны отдельно.
+        found.extend(host_paths)
+        return found
+    # Имя команды стадии решает судьбу токена из слэшей в ней (issue #97):
+    # у файловой команды слэш — путь при любых соседях.
+    name, name_at = command_at(tokens)
+    target_stage = _write_target_stage(tokens, name)
+    out_flags = OUTPUT_FLAGS.get(name, ())
+    inline = inline_code_args(tokens)
+    for i, token in enumerate(tokens):
+        if i in targets:
+            continue
+        # Имя команды — то, что ИСПОЛНЯЕТСЯ, а не то, куда пишут. Строка кода,
+        # начинающаяся с маркера комментария (`// dead code below …`), после
+        # разбора как командной строки давала кандидата `//` — и правка #103
+        # делала эту форму хуже, чем было в main. Исключение позиционное,
+        # поэтому `cp / dst` и `rm -rf /` не задевает: там слэш стоит
+        # аргументом. Запуск скрипта по имени — не запись; это issue #83.
+        if i == name_at:
+            continue
+        if i in inline:
+            if inline[i] == "shell":
+                found.extend(path_candidates(token, depth + 1))
+            else:
+                found.extend(code_candidates(token, depth + 1))
+            continue
+        if token in STAGE_OPS or token in REDIRECT_OPS or token in ("<", "<<", "<<-"):
+            continue
+        # Аргумент ключа вывода — цель записи, даже если односегментный:
+        # `curl -o <новый>` признак записи уже назвал поимённо.
+        after_flag = i and tokens[i - 1] in out_flags
+        if not _plain_candidate(token):
+            # Стадия, природу которой мы не знаем, могла получить командную
+            # строку в кавычках: `flock /tmp/l bash -c "rm -rf <наружу>"`,
+            # `mytool --eval "…"`. Разбирать её как команду нельзя — там
+            # с тем же успехом может лежать проза. Но однозначный путь
+            # из неё вынуть можно: то же правило, что для кода вне литерала.
+            found.extend(_inner_paths(token))
+            continue
+        if SLASHES_ONLY.match(token) and _is_division(tokens, i):
+            continue
+        found.extend(_inner_paths(token))
+        if not _positional_path(token, name, target_stage or after_flag):
+            continue
+        found.append(token)
+    return found
+
+def _inner_paths(token):
+    """Однозначные пути внутри токена, который сам путём не является.
+
+    Кавычка скрывает структуру: содержимое остаётся одним токеном, и стадия,
+    которой нет в таблице природ, отдаёт свою командную строку целиком.
+    Ревьюер плана замерил цену — шесть форм, от `flock … bash -c "rm -rf …"`
+    до `mytool --eval "…"`, переставали проверяться.
+
+    Поэтому внутрь заглядываем, но берём только то, что путём является
+    однозначно: абсолютный путь не короче двух сегментов, путь от точки
+    или от тильды. Это то же правило, что для встроенного кода вне литерала,
+    и оно же оставляет за бортом прозу: `/feature`, `/code`, `=== / ===`.
+    """
+    if not token or len(token.split()) < 2:
+        return []
+    return [tok for tok in tokenize(token) if CODE_PATH.match(tok or "")]
+
+# Предел вложенности разбора. Разбор рекурсивен по телам документов, по коду
+# внутри кавычек и по подстановкам, и у рекурсии не было предела: тысяча
+# вложенных документов помещается в 19 КБ одной команды, а `bash -n` считает
+# такую команду синтаксически верной. Хук падал с RecursionError, а упавший
+# хук — это НЕ отказ: барьером служит только код возврата 2, всякий другой
+# пропускает вызов. Найдено ревьюером результата (issue #103), общий класс
+# «падение механизма равно разрешению» заведён отдельно.
+#
+# Превышение трактуется в пользу отказа: возвращается корень файловой системы,
+# то есть заведомо внешний путь. Двенадцать уровней — далеко за пределами
+# любой настоящей команды.
+MAX_DEPTH = 12
+DEPTH_EXCEEDED = ["/"]
+
+def path_candidates(command, depth=0):
     """Всё, что в команде похоже на путь: аргументы, цели перенаправления.
 
     Из разбора исключается то, что путём не является: тела heredoc (данные),
-    glob-токены и — для docker/podman — пути внутри контейнера, кроме
-    источников примонтированных томов.
+    glob-токены, выражения внутри встроенного кода и — для docker/podman —
+    пути внутри контейнера, кроме источников примонтированных томов.
+
+    Кавычки здесь НЕ снимаются заранее: их снимает shlex по токену, сохраняя
+    границу. Это и есть разделение по природе строки (issue #103).
     """
-    normalized = normalize(command)          # уже без тел «пишущих» heredoc
+    if depth > MAX_DEPTH:
+        return list(DEPTH_EXCEEDED)
+    text, bodies = split_heredocs(ansi_literals(command or ""))
     found = []
+
+    # Тело документа, отданного интерпретатору, — код или командная строка,
+    # смотря по получателю. Разбирается по своим правилам, а не как аргументы.
+    for body, nature in bodies:
+        if nature == "shell":
+            found.extend(path_candidates(body, depth + 1))
+        else:
+            found.extend(code_candidates(body, depth + 1))
 
     # Подстановки исполняет ХОСТ, где бы они ни стояли, — в том числе среди
     # аргументов контейнера. Разбираются рекурсивно и ДО контейнерного сужения:
     # иначе `docker run img "$(touch <наружу>)"` проходил границу, потому что
     # вся стадия объявлялась контейнерной. Второй круг внешнего ревью.
-    for inner in substitutions(normalized):
-        found.extend(path_candidates(inner))
+    for inner in substitutions(text):
+        found.extend(path_candidates(inner, depth + 1))
 
     # Разбор постадийный: сужение, законное для одной стадии, не должно
-    # распространяться на соседнюю. Границы стадий берутся из ТОКЕНОВ, поэтому
-    # `;` внутри кавычек (`sh -c "echo /app; ls /tmp/x"`) стадию не разрывает —
-    # до перехода на токены это давало ложные срабатывания на аргументах,
-    # предназначенных контейнеру.
-    for stage_tokens in split_stages(tokenize(normalized)):
-        if not stage_tokens:
-            continue
-        # Перенаправления реальны в любой стадии, включая docker: вывод пишется
-        # на хост, а не в контейнер.
-        i = 0
-        while i < len(stage_tokens):
-            if stage_tokens[i] in (">", ">>") and i + 1 < len(stage_tokens):
-                found.append(stage_tokens[i + 1])
-                i += 2
-                continue
-            i += 1
-        is_container, host_paths = container_scope_tokens(stage_tokens)
-        if is_container:
-            # Остальные аргументы описывают файловую систему контейнера;
-            # проверять в ней нечего. Пути хоста собраны отдельно.
-            found.extend(host_paths)
-            continue
-        # Имя команды стадии решает судьбу токена из слэшей в ней (issue #97):
-        # у файловой команды слэш — путь при любых соседях.
-        name = command_word(stage_tokens)
-        for i, token in enumerate(stage_tokens):
-            if token in STAGE_OPS or token in (">", ">>", "<", "<<", "<<-"):
-                continue
-            if not token or token.startswith("-"):
-                continue
-            if DIGITS_ONLY.match(token) or GLOB_ONLY.match(token):
-                continue
-            if SLASHES_ONLY.match(token) and _is_division(stage_tokens, i):
-                continue
-            if "/" in token or token in (".", ".."):
-                found.append(token)
+    # распространяться на соседнюю.
+    for stage_tokens in split_stages(tokenize(text)):
+        found.extend(_stage_candidates(stage_tokens, depth))
     return found
 
 def split_stages(tokens):
