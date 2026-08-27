@@ -28,7 +28,7 @@ const item: JournalItem = {
   },
 }
 
-describe('#76: bidi-изоляция значений в теле ответа', () => {
+describe('@req U7 #76: bidi-изоляция значений в теле ответа', () => {
   it('значение description лежит в <bdi> нетронутым, кавычка и запятая — снаружи', () => {
     const { container } = render(<Journal items={[item]} />)
     const bdis = Array.from(container.querySelectorAll('.payload bdi'))

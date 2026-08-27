@@ -10,7 +10,7 @@ import {
   validBody,
 } from './support/harness.js';
 
-describe('F1 · создание платежа', () => {
+describe('@req F1 · создание платежа', () => {
   it('создаёт платёж и отвечает 201', async () => {
     const app = await startApp();
     const res = await app.create(validBody());
@@ -47,7 +47,7 @@ describe('F1 · создание платежа', () => {
   });
 });
 
-describe('F7 · заголовок Idempotency-Key', () => {
+describe('@req F7 · заголовок Idempotency-Key', () => {
   it('без заголовка → 400 idempotency_key_required', async () => {
     const app = await startApp();
     const res = await app.create(validBody(), { key: null });
@@ -90,7 +90,7 @@ describe('F7 · заголовок Idempotency-Key', () => {
   });
 });
 
-describe('F7a · заголовок X-Merchant-Id', () => {
+describe('@req F7a · заголовок X-Merchant-Id', () => {
   it('без заголовка → 400 merchant_id_required', async () => {
     const app = await startApp();
     const res = await app.create(validBody(), { merchant: null });
@@ -180,7 +180,7 @@ describe('Пробел D · порядок проверок: заголовки 
   });
 });
 
-describe('F17, F18 · правило тестовых сумм', () => {
+describe('@req F17 @req F18 · правило тестовых сумм', () => {
   const cases: [number, string, string | null][] = [
     [125000, 'pending', null],
     [10001, 'failed', 'test_amount_rule'],
