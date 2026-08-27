@@ -1482,7 +1482,10 @@ def check_doc_count(counted):
             text = fh.read()
         # Граница берётся по платформе прогона: одно число на всех давало бы
         # запас там, где стоит гейт (CI идёт на linux, где проверок больше).
-        pattern = (r"на linux — не меньше\s*(\d+)" if sys.platform.startswith("linux")
+        # \D* вместо пробела намеренно: число в документе живёт в тексте,
+        # и перенос строки между словом и числом — не повод объявить обещание
+        # ненайденным. На этом красном CI и поймал.
+        pattern = (r"на linux\D*?(\d+)" if sys.platform.startswith("linux")
                    else r"не меньше\s*(\d+)\s*провер")
         m = re.search(pattern, text)
         promised = int(m.group(1)) if m else None
