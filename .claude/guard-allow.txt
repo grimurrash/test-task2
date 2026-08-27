@@ -8,3 +8,5 @@
 # Создание рабочих веток по соглашению проекта — разрешено сэром явно
 # («создавай МР, пушь»). Ветки вне соглашения по-прежнему требуют подтверждения.
 git (?:checkout -b|switch -c) (?:feature|fix|chore|docs|test)/[a-z0-9._-]+$
+git worktree add \.worktrees/[a-z0-9._-]+ -b (?:feature|fix|chore|docs|test)/[a-z0-9._-]+ (?:main|origin.main)$
+git worktree remove \.worktrees/[a-z0-9._-]+$
