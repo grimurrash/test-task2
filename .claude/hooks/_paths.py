@@ -115,16 +115,20 @@ WRITE_INTENT = re.compile(
     # из хука ДО разбора: правило, починенное в #97, до такой команды
     # не доживало. `<` слева остаётся исключённым — это `<>`, чтение-запись.
     #
-    # Форма без приставки остаётся как была. Форма С приставкой добавлена
-    # отдельной альтернативой и сужена дважды: справа не `&` (`2>&1` —
-    # дублирование дескриптора, а не запись) и цель не в каталоге устройств
-    # (`2>` с глушением вывода). Без этих двух сужений признак записи
-    # срабатывал почти на каждой команде с отводом stderr — замерено ревьюером
-    # плана сразу на трёх хуках: guard-scope отказывал в чтении снаружи,
-    # guard-protected-files — в чтении собственных файлов правил, а mark-verify
-    # отмечал правкой кода обычный `grep` с отводом ошибок.
-    r"(?<![0-9<>])>>?(?![>&])"                                 # перенаправление вывода
-    r"|(?<=[0-9])>>?(?![>&])(?!\s*/dev/)"                      # `2> файл`, но не в устройство
+    # Форма без приставки остаётся ровно такой, какой была: `&` в её исключение
+    # добавлять нельзя. Приставку-дескриптор здесь и так отсекает соседний
+    # lookbehind, зато `>&файл` — это bash-форма записи ОБОИХ потоков в файл,
+    # тождественная `&>файл`, и она уходила из-под признака целиком. Найдено
+    # ревьюером результата, проверено исполнением: файл создаётся.
+    #
+    # Форма С приставкой добавлена отдельной альтернативой и сужена дважды:
+    # справа не `&` (`2>&1` — дублирование дескриптора, а не запись) и цель
+    # не в каталоге устройств (глушение вывода). Без этих двух сужений признак
+    # записи срабатывал почти на каждой команде с отводом stderr — замерено
+    # ревьюером плана сразу на трёх хуках. Возврат из каталога устройств
+    # точками (`2> /dev/../наружу`) сужение не обходит: он исключён явно.
+    r"(?<![0-9<>])>>?(?![>])"                                  # перенаправление вывода
+    r"|(?<=[0-9])>>?(?![>&])(?!\s*/dev/(?![^\s]*\.\.))"        # `2> файл`, но не в устройство
     r"|\b(?:rm|rmdir|unlink|mv|cp|dd|truncate|shred|touch|mkdir|install|rsync|scp)\b"
     r"|\b(?:tee|ln)\b"
     r"|\b(?:chmod|chown|chgrp|xattr)\b"
@@ -445,9 +449,10 @@ DATA_SINKS = {
     "curl", "wget", "mail", "sendmail", "base64", "tr", "fold",
 }
 
-def command_word(tokens):
-    """Имя программы стадии: пропускает обёртки, их ключи, присваивания
-    переменных и разделитель `--`. Возвращает пустую строку, если не нашлось."""
+def command_at(tokens):
+    """(имя программы стадии, индекс её токена). Пропускает обёртки, их ключи
+    со значениями, присваивания переменных и разделитель `--`. Не нашлось —
+    ("", -1)."""
     i = 0
     wrapper = ""
     while i < len(tokens):
@@ -474,8 +479,12 @@ def command_word(tokens):
                     i += 1
                 i += 1
             continue
-        return name
-    return ""
+        return name, i
+    return "", -1
+
+def command_word(tokens):
+    """Имя программы стадии. Пустая строка, если не нашлось."""
+    return command_at(tokens)[0]
 
 # Команды, которые тело документа только ПЕРЕДАЮТ дальше по конвейеру, но сами
 # stdin не исполняют. Нужны затем, чтобы `gh pr create --body-file - <<'BODY'
@@ -807,9 +816,9 @@ def container_scope_tokens(tokens):
 # не давали — в контейнерной стадии, где общий обход токенов отключён,
 # это был прямой пропуск (issue #103, пункт 3). Приставка-дескриптор (`2>`)
 # приходит отдельным токеном, поэтому её здесь нет.
-# `>&` сюда не входит: `2>&1` — дублирование дескриптора, и целью там стоит
-# номер, а не файл.
-REDIRECT_OPS = {">", ">>", ">|", "&>", "&>>"}
+# `>&` здесь есть: `>&файл` — запись обоих потоков. У `2>&1` целью окажется
+# номер дескриптора, и его отсеивает общий фильтр формы токена.
+REDIRECT_OPS = {">", ">>", ">|", "&>", "&>>", ">&"}
 
 # Оболочки: аргумент `-c` — снова командная строка, разбирается теми же
 # правилами рекурсивно. Это то, на чём держится отказ `sh -c 'chmod -R 777 / 2'`.
@@ -846,7 +855,10 @@ STRING_LITERAL = re.compile(
 # бывают формы кода, где строка не в кавычках (`perl -e "unlink q(/outside/x)"`).
 # Односегментный `/слово` снаружи литерала — это деление, флаги регулярного
 # выражения или знак пунктуации лексера.
-CODE_PATH = re.compile(r"^(?:/+[^/\s]+){2,}/*$|^~/|^\.{1,2}/")
+CODE_PATH = re.compile(
+    r"^(?:/+[^/\s]+){2,}/*$"                  # абсолютный, от двух сегментов
+    r"|^~/|^\.{1,2}/"                          # от тильды и от точки
+    r"|^\$\{?(?:HOME|USERPROFILE)\}?(?:/|$)")  # домашний каталог
 
 # Односегментный токен со слэшем: `/feature`, `/code`, `/Отменить`, `/слово:`.
 # Такой токен — путь только в позиции цели записи; в остальных позициях это
@@ -978,7 +990,7 @@ def _plain_candidate(token):
         return True
     return "/" in token or token in (".", "..")
 
-def code_candidates(code):
+def code_candidates(code, depth=0):
     """Пути внутри содержимого встроенного кода.
 
     Литерал из ОДНОГО токена — путь целиком, и позиция здесь ни при чём:
@@ -996,6 +1008,8 @@ def code_candidates(code):
     вроде `perl -e "unlink q(/outside/x)"` кавычек не имеют, и терять их
     нельзя.
     """
+    if depth > MAX_DEPTH:
+        return list(DEPTH_EXCEEDED)
     out = []
     for m in STRING_LITERAL.finditer(code or ""):
         body = next((g for g in m.groups() if g is not None), "")
@@ -1004,7 +1018,7 @@ def code_candidates(code):
             if _plain_candidate(toks[0]) and _positional_path(toks[0], ""):
                 out.append(toks[0])
         elif toks:
-            out.extend(path_candidates(body))
+            out.extend(path_candidates(body, depth + 1))
     for tok in tokenize(STRING_LITERAL.sub(" ", code or "")):
         if CODE_PATH.match(tok or ""):
             out.append(tok)
@@ -1065,18 +1079,21 @@ def _positional_path(token, name, target_stage=False):
         return True
     return os.path.exists(token)
 
-def _stage_candidates(tokens):
+def _stage_candidates(tokens, depth=0):
     """Кандидаты одной стадии командной строки."""
     if not tokens:
         return []
     found = []
     targets = set()
     # Перенаправления реальны в любой стадии, включая docker: вывод пишется
-    # на хост, а не в контейнер.
+    # на хост, а не в контейнер. Цель дублирования дескриптора (`2>&1`) — номер,
+    # а не файл, и она отсеивается здесь же, чтобы не уходить в protected_hit
+    # и в разбор правки кода лишним кандидатом.
     i = 0
     while i < len(tokens):
         if tokens[i] in REDIRECT_OPS and i + 1 < len(tokens):
-            found.append(tokens[i + 1])
+            if not DIGITS_ONLY.match(tokens[i + 1] or ""):
+                found.append(tokens[i + 1])
             targets.add(i + 1)
             i += 2
             continue
@@ -1089,18 +1106,26 @@ def _stage_candidates(tokens):
         return found
     # Имя команды стадии решает судьбу токена из слэшей в ней (issue #97):
     # у файловой команды слэш — путь при любых соседях.
-    name = command_word(tokens)
+    name, name_at = command_at(tokens)
     target_stage = _write_target_stage(tokens, name)
     out_flags = OUTPUT_FLAGS.get(name, ())
     inline = inline_code_args(tokens)
     for i, token in enumerate(tokens):
         if i in targets:
             continue
+        # Имя команды — то, что ИСПОЛНЯЕТСЯ, а не то, куда пишут. Строка кода,
+        # начинающаяся с маркера комментария (`// dead code below …`), после
+        # разбора как командной строки давала кандидата `//` — и правка #103
+        # делала эту форму хуже, чем было в main. Исключение позиционное,
+        # поэтому `cp / dst` и `rm -rf /` не задевает: там слэш стоит
+        # аргументом. Запуск скрипта по имени — не запись; это issue #83.
+        if i == name_at:
+            continue
         if i in inline:
             if inline[i] == "shell":
-                found.extend(path_candidates(token))
+                found.extend(path_candidates(token, depth + 1))
             else:
-                found.extend(code_candidates(token))
+                found.extend(code_candidates(token, depth + 1))
             continue
         if token in STAGE_OPS or token in REDIRECT_OPS or token in ("<", "<<", "<<-"):
             continue
@@ -1140,7 +1165,21 @@ def _inner_paths(token):
         return []
     return [tok for tok in tokenize(token) if CODE_PATH.match(tok or "")]
 
-def path_candidates(command):
+# Предел вложенности разбора. Разбор рекурсивен по телам документов, по коду
+# внутри кавычек и по подстановкам, и у рекурсии не было предела: тысяча
+# вложенных документов помещается в 19 КБ одной команды, а `bash -n` считает
+# такую команду синтаксически верной. Хук падал с RecursionError, а упавший
+# хук — это НЕ отказ: барьером служит только код возврата 2, всякий другой
+# пропускает вызов. Найдено ревьюером результата (issue #103), общий класс
+# «падение механизма равно разрешению» заведён отдельно.
+#
+# Превышение трактуется в пользу отказа: возвращается корень файловой системы,
+# то есть заведомо внешний путь. Двенадцать уровней — далеко за пределами
+# любой настоящей команды.
+MAX_DEPTH = 12
+DEPTH_EXCEEDED = ["/"]
+
+def path_candidates(command, depth=0):
     """Всё, что в команде похоже на путь: аргументы, цели перенаправления.
 
     Из разбора исключается то, что путём не является: тела heredoc (данные),
@@ -1150,6 +1189,8 @@ def path_candidates(command):
     Кавычки здесь НЕ снимаются заранее: их снимает shlex по токену, сохраняя
     границу. Это и есть разделение по природе строки (issue #103).
     """
+    if depth > MAX_DEPTH:
+        return list(DEPTH_EXCEEDED)
     text, bodies = split_heredocs(ansi_literals(command or ""))
     found = []
 
@@ -1157,21 +1198,21 @@ def path_candidates(command):
     # смотря по получателю. Разбирается по своим правилам, а не как аргументы.
     for body, nature in bodies:
         if nature == "shell":
-            found.extend(path_candidates(body))
+            found.extend(path_candidates(body, depth + 1))
         else:
-            found.extend(code_candidates(body))
+            found.extend(code_candidates(body, depth + 1))
 
     # Подстановки исполняет ХОСТ, где бы они ни стояли, — в том числе среди
     # аргументов контейнера. Разбираются рекурсивно и ДО контейнерного сужения:
     # иначе `docker run img "$(touch <наружу>)"` проходил границу, потому что
     # вся стадия объявлялась контейнерной. Второй круг внешнего ревью.
     for inner in substitutions(text):
-        found.extend(path_candidates(inner))
+        found.extend(path_candidates(inner, depth + 1))
 
     # Разбор постадийный: сужение, законное для одной стадии, не должно
     # распространяться на соседнюю.
     for stage_tokens in split_stages(tokenize(text)):
-        found.extend(_stage_candidates(stage_tokens))
+        found.extend(_stage_candidates(stage_tokens, depth))
     return found
 
 def split_stages(tokens):
