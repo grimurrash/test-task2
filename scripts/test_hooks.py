@@ -530,6 +530,30 @@ CASES = [
     ("guard-protected-files.py", "правка строчным редактором",
      {"tool_name": "Bash", "tool_input": {"command": "ed CLAUDE.md"}}, "deny"),
 
+    # Вход и выход, названные ключом, а не позицией. Показано внешней линзой
+    # (codex) на трёх командах сразу: разбор по позиции считал целью записи
+    # и то, что команда читает. У `dd` цель — только операнд `of=`; у `tar`
+    # режим решает, что читается: создание архива ЧИТАЕТ перечисленные пути,
+    # распаковка пишет в каталог назначения; через `-exec` у `find` запускают
+    # и читателя, и писателя, поэтому запускаемая команда разбирается своим же
+    # разбором. Каждая пара — «читает, проходит» рядом с «пишет, отклоняется».
+    ("guard-protected-files.py", "dd читает защищённый файл наружу",
+     {"tool_name": "Bash", "tool_input": {"command": "dd if=.claude/hooks/guard-git.py of=/tmp/x"}}, "allow"),
+    ("guard-protected-files.py", "dd пишет в настройки",
+     {"tool_name": "Bash", "tool_input": {"command": "dd if=/tmp/x of=.claude/settings.json"}}, "deny"),
+    ("guard-protected-files.py", "tar снимает копию каталога хуков",
+     {"tool_name": "Bash", "tool_input": {"command": "tar -cf /tmp/hooks.tar .claude/hooks"}}, "allow"),
+    ("guard-protected-files.py", "tar кладёт архив в каталог хуков",
+     {"tool_name": "Bash", "tool_input": {"command": "tar -cf .claude/hooks/x.tar docs"}}, "deny"),
+    ("guard-protected-files.py", "tar распаковывает поверх каталога хуков",
+     {"tool_name": "Bash", "tool_input": {"command": "tar -xzf /tmp/evil.tar -C .claude/hooks"}}, "deny"),
+    ("guard-protected-files.py", "find запускает читателя",
+     {"tool_name": "Bash", "tool_input": {"command": "find .claude/hooks -name '*.py' -exec grep -l state_base {} +"}}, "allow"),
+    ("guard-protected-files.py", "find запускает удаление",
+     {"tool_name": "Bash", "tool_input": {"command": "find .claude/hooks -name '*.py' -exec rm {} +"}}, "deny"),
+    ("guard-protected-files.py", "find запускает правку на месте",
+     {"tool_name": "Bash", "tool_input": {"command": "find .claude/hooks -name '*.py' -exec sed -i '' s/x/y/ {} +"}}, "deny"),
+
     # --- issue #54: перенаправление состояния — это и есть выдача пропуска ---
     # Пара к сужению: набор получил право уводить состояние к себе, значит
     # сессия агента этого права получить не должна. Переменная, указывающая,

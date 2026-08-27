@@ -1410,6 +1410,104 @@ def _git_targets(tokens):
         return [t for t in joined[i + 1:] if t and not t.startswith("-")]
     return []
 
+
+# Команды, у которых цель записи стоит не «в позиции», а названа ключом.
+# Внешнее ревью (codex) показало на трёх сразу: `dd if=<хук> of=/tmp/x`,
+# `tar -cf /tmp/архив <каталог хуков>` и `find <каталог> -exec grep … {} +`
+# получали отказ, хотя читают. Общий признак: у команды есть и вход, и выход,
+# а разбор по позиции их не различал.
+DD_OUT = re.compile(r"^(?:of|conv_of)=(.+)$")
+TAR_EXTRACT = ("-x", "--extract", "--get")
+TAR_CREATE = ("-c", "--create", "-r", "--append", "-u", "--update",
+              "-A", "--concatenate", "--delete")
+TAR_DIR = ("-C", "--directory")
+FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+
+def _dd_targets(tokens):
+    """У dd цель записи — только операнд `of=`; `if=` читается."""
+    out = []
+    for tok in tokens:
+        m = DD_OUT.match(tok or "")
+        if m:
+            out.append(m.group(1))
+    return out
+
+def _flag_value(tokens, flags):
+    """Значение ключа: `-C dir`, `--directory=dir`."""
+    for i, tok in enumerate(tokens):
+        tok = tok or ""
+        for f in flags:
+            if tok == f and i + 1 < len(tokens):
+                return tokens[i + 1]
+            if tok.startswith(f + "="):
+                return tok[len(f) + 1:]
+    return None
+
+def _tar_targets(tokens):
+    """Режим tar решает, что читается, а что пишется.
+
+    Распаковка пишет в каталог назначения (`-C`), а без него — в текущий,
+    и что лежит в архиве, команде не видно: цель есть, но не разобрана.
+    Создание архива, наоборот, ЧИТАЕТ перечисленные пути и пишет в файл
+    архива. Прежняя редакция считала целью всякий позиционный аргумент —
+    и `tar -cf /tmp/hooks.tar .claude/hooks`, обычная резервная копия,
+    получала отказ.
+    """
+    flags = [t or "" for t in tokens]
+    joined = " ".join(flags)
+    def has(opts):
+        for f in flags:
+            if f in opts:
+                return True
+            if f.startswith("-") and not f.startswith("--"):
+                for o in opts:
+                    if len(o) == 2 and o[1] in f[1:]:
+                        return True
+        return False
+    if has(TAR_EXTRACT):
+        dest = _flag_value(tokens, TAR_DIR)
+        return [dest] if dest else [UNRESOLVED]
+    if has(TAR_CREATE):
+        archive = _flag_value(tokens, ("-f", "--file"))
+        if archive:
+            return [archive]
+        # Имя архива идёт следом за связкой ключей с `f`.
+        for i, f in enumerate(flags):
+            if f.startswith("-") and "f" in f and i + 1 < len(flags):
+                return [flags[i + 1]]
+        return [UNRESOLVED]
+    return []
+
+def _find_targets(tokens, depth=0):
+    """`find` пишет по `-delete` и по тому, что запускает через `-exec`.
+
+    Запускать через `-exec` можно и читателя (`grep`), и писателя (`rm`).
+    Поэтому запускаемая команда разбирается своим же разбором, и корни
+    поиска становятся целями только тогда, когда она пишет.
+    """
+    flags = [t or "" for t in tokens]
+    roots = []
+    i = 0
+    while i < len(flags):
+        tok = flags[i]
+        if tok.startswith("-"):
+            break
+        roots.append(tok)
+        i += 1
+    roots = roots[1:] if roots else []          # первое — имя команды
+    if any(f == "-delete" for f in flags):
+        return roots
+    for i, tok in enumerate(flags):
+        if tok in FIND_EXEC:
+            run = []
+            for t in flags[i + 1:]:
+                if t in (";", "\\;", "+"):
+                    break
+                run.append(t)
+            if run and _stage_write_targets(run, depth + 1):
+                return roots
+    return []
+
 def _stage_write_targets(tokens, depth=0, names=None):
     if not tokens:
         return []
@@ -1442,15 +1540,12 @@ def _stage_write_targets(tokens, depth=0, names=None):
         return found
 
     target_stage = _write_target_stage(tokens, name)
-    if name in CONDITIONAL_FS:
-        flags = CONDITIONAL_FS[name]
-        target_stage = any((t or "").split("=")[0] in flags
-                           or (t or "").startswith(flags) for t in tokens)
-        if name == "tar" and target_stage and not any(
-                (t or "").startswith("-C") or t == "--directory" for t in tokens):
-            # Распаковка идёт в текущий каталог, а что лежит в архиве —
-            # команде не видно. Цель есть, но она не разобрана.
-            found.append(UNRESOLVED)
+    if name in ("dd", "tar", "find"):
+        # У этих троих вход и выход названы ключами, а не позицией.
+        found.extend({"dd": _dd_targets, "tar": _tar_targets}.get(
+            name, lambda t: _find_targets(t, depth))(tokens))
+        return [expand(t, dict(names or {}, **assignments(tokens)))
+                if t != UNRESOLVED else t for t in found]
     inplace = name in INPLACE and any(INPLACE_FLAG.match(t or "") for t in tokens)
     editor = name in LINE_EDITORS
     out_flags = OUTPUT_FLAGS.get(name, ())
