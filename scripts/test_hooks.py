@@ -1187,6 +1187,209 @@ def _main():
         failures += 0 if ok else 1
         print("    %s %-62s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
 
+    print("\n  guard-scope.py — природа строки: путь, код, чужая ФС, литерал (issue #103)")
+    # Разбор снимал кавычки ДО токенизации, и строка теряла природу: содержимое
+    # кавычек, тело встроенного кода и аргументы командной строки становились
+    # одним потоком токенов. Каждая пара ниже — сужение и его цена: слева
+    # «безобидное проходит», справа «настоящее по-прежнему отклоняется»
+    # в той же форме команды. Без правой половины сужение незаметно становится
+    # ослаблением — прямое требование задачи.
+    nature_pairs = [
+        # Правка 1: кавычка — граница природы, а не мусор перед разбором.
+        ("слэш-команда в тексте сообщения — упоминание",
+         'echo "Запусти /feature для полного цикла" > docs/x.md',
+         "перенаправление наружу в той же форме — отказ",
+         'echo "Запусти /feature для полного цикла" > /outside/file'),
+        ("закрывающий тег в шаблоне grep — не путь",
+         'grep -o "Стенд на <code>[^<]*</code>" dist/index.html > docs/x.md',
+         "цель перенаправления в той же форме проверяется",
+         'grep -o "Стенд на <code>[^<]*</code>" dist/index.html > /outside/x.md'),
+        # Правка 4: программа awk — код, а не набор аргументов.
+        ("регулярное выражение awk — не путь",
+         "awk '/^worktree /{print $2}' docs/a.txt > docs/b.txt",
+         "запись awk наружу — настоящий путь",
+         'awk \'{print > "/outside/x"}\' docs/a.txt'),
+        # Правка 4: во встроенном коде путь живёт внутри литерала.
+        ("деление вне литерала — выражение, а не путь",
+         'python3 -c "print((b - a).total_seconds() / 60,1)" > docs/out.txt',
+         "многосегментный путь вне литерала кандидатом остаётся",
+         'perl -e "unlink q(/outside/x)"'),
+        ("литерал из нескольких токенов — строка документации",
+         'python3 -c "print(\'| Запускает | сэр или /karina | Карина |\')" > docs/x.md',
+         "тот же литерал как командная строка — отказ",
+         'python3 -c "import os; os.system(\'rm -rf /outside/dir\')"'),
+        ("флаги регулярного выражения в литерале — не путь",
+         'python3 -c "print(re.sub(r\'/gm\', \'\', s))" > docs/out.txt',
+         "многосегментный литерал наружу — отказ",
+         'python3 -c "open(\'/outside/file\',\'w\')"'),
+        # Правка 2: `$'…'` — кавычки оболочки, а не имя переменной.
+        ("литерал $'…' внутрь репозитория разрешён",
+         "rm -rf $'docs/tmp'",
+         "литерал $'…' наружу — отказ",
+         "rm -rf $'/outside/dir'"),
+        ("экранирование внутри $'…' не мешает",
+         "echo $'a\\tb' > docs/x.md",
+         "оно же перед путём наружу — отказ",
+         "echo $'a\\tb' > /outside/file"),
+        # Правка 3: перенаправление с приставкой и хвостом.
+        ("перенаправление ошибок внутрь репозитория",
+         "echo x 2> docs/err.log",
+         "перенаправление ошибок наружу — отказ",
+         "echo x 2> /outside/file"),
+        ("перенаправление docker с приставкой на хост",
+         "docker ps 2> docs/ps.txt",
+         "оно же наружу — отказ",
+         "docker ps 2> /outside/file"),
+        ("перенаправление docker формой &> на хост",
+         "docker ps &> docs/ps.txt",
+         "оно же наружу — отказ",
+         "docker ps &> /outside/file"),
+        ("перенаправление docker формой >| на хост",
+         "docker ps >| docs/ps.txt",
+         "оно же наружу — отказ",
+         "docker ps >| /outside/file"),
+        # Правка 5: односегментный токен вне позиции цели записи.
+        ("слова из русского текста после слэша — не пути",
+         "echo /code /summary /Отменить > docs/x.md",
+         "тот же токен целью перенаправления — отказ",
+         "echo x > /newfile"),
+        ("односегментный токен аргументом grep — не путь",
+         "grep -c /newfile docs/x.md > docs/y.md",
+         "он же аргументом файловой команды — отказ",
+         "rm -rf /newfile"),
+        ("голая точка-точка при смене каталога — не путь",
+         "ln -sfn docs/a docs/b 2>/dev/null\ncd .. && python3 scripts/test_hooks.py",
+         "она же аргументом файловой команды — отказ",
+         "ln -sfn docs/a docs/b\ncp docs/x.md .."),
+        # Оговорка к правке 5: шаблон со звёздочкой из-под правила выведен.
+        # Один раз правило против ложной тревоги уже накрыло glob от корня.
+        ("шаблон без ведущего слэша во встроенном коде — не путь",
+         'python3 -c "print(\'**\')" > docs/out.txt',
+         "шаблон ОТ КОРНЯ во встроенном коде — отказ",
+         'python3 -c "shutil.rmtree(\'/*\')"'),
+        # Правка 6: получатель документа — команда своей стадии.
+        ("документ после && — получатель cat, тело данные",
+         "mkdir -p docs/roles && cat > docs/roles/x.md <<'MD'\nтекст про /feature\nMD",
+         "тот же документ в файл наружу — отказ",
+         "mkdir -p docs && cat > /outside/x.md <<'MD'\nтекст\nMD"),
+        ("конвейер после документа не делает тело кодом",
+         "gh pr create --body-file - <<'BODY' 2>&1 | tail -3\nтекст про /feature\nBODY",
+         "конвейер в интерпретатор делает — отказ",
+         "cat <<'EOF' | bash\nrm -rf /outside/dir\nEOF"),
+    ]
+    for ok_title, ok_cmd, deny_title, deny_cmd in nature_pairs:
+        got_ok = decision_of(run("guard-scope.py",
+                                 {"tool_name": "Bash", "tool_input": {"command": ok_cmd}}))
+        ok = got_ok == "allow"
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали allow получили %s" % ("✓" if ok else "✗", ok_title, got_ok))
+        got_deny = decision_of(run("guard-scope.py",
+                                   {"tool_name": "Bash", "tool_input": {"command": deny_cmd}}))
+        ok = got_deny == "deny"
+        failures += 0 if ok else 1
+        print("    %s   └ %-58s ожидали deny  получили %s" % ("✓" if ok else "✗", deny_title, got_deny))
+
+    print("\n  guard-scope.py — названные цены разделения (issue #103)")
+    # Две формы, которые различить надёжно нельзя. Правило проекта: не чинить,
+    # а назвать цену. Кейсы стоят здесь, чтобы цена не изменилась молча —
+    # ни в сторону дыры, ни в сторону шума.
+    named_costs = [
+        # Односегментный путь, которого нет на диске, во встроенном коде
+        # проверяться перестал. Создание записи в корне требует прав root,
+        # и цена принята сознательно.
+        ("цена: односегментный новый путь во встроенном коде проходит",
+         'python3 -c "open(\'/newfile\',\'w\')"', "allow"),
+        # Обратная половина той же цены: два сегмента — по-прежнему отказ.
+        ("он же двумя сегментами — по-прежнему отказ",
+         'python3 -c "open(\'/newfile/x\',\'w\')"', "deny"),
+        # Регулярное выражение БЕЗ пробелов вне литерала даёт токен из двух
+        # сегментов и от пути по форме неотличимо.
+        ("цена: регулярка без пробелов вне литерала — отказ",
+         'node -e "console.log(s.replace(/foo/gm, x))" > docs/out.txt', "deny"),
+        # Та же регулярка с пробелом внутри распадается на односегментные
+        # токены и проходит — граница проходит по форме токена, не по смыслу.
+        ("она же с пробелом внутри — проходит",
+         'node -e "console.log(s.replace(/шаг \\d+/gm, \'\'))" > docs/out.txt', "allow"),
+    ]
+    for title, cmd, expected in named_costs:
+        got = decision_of(run("guard-scope.py",
+                              {"tool_name": "Bash", "tool_input": {"command": cmd}}))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
+
+    print("\n  guard-scope.py — настоящие отказы 26 августа (issue #103)")
+    # Команды взяты из .claude/logs/guard.jsonl: работа над схемой ролей,
+    # а не подготовленные примеры. Длинные обрезаны до стадии, дававшей отказ;
+    # ничего не дописано. Пятнадцать из шестнадцати — ложные и обязаны
+    # проходить, шестнадцатый настоящий и обязан отклоняться.
+    real_refusals = [
+        ("закрывающий тег в шаблоне grep",
+         'npm run build >/dev/null 2>&1; grep -o "Стенд поднят на <code>[^<]*</code>" dist/index.html',
+         "allow"),
+        ("слэш внутри echo как разделитель заголовка",
+         'CID=$(docker run -d --rm -p 8090:8082 psp-docs-nocache) && echo "=== / ===" '
+         '&& curl -s -o /dev/null -w "%{http_code}\\n" http://localhost:8090/',
+         "allow"),
+        ("смена каталога на родительский",
+         "ln -sfn docs/a docs/b 2>/dev/null\ncd .. && python3 scripts/test_hooks.py",
+         "allow"),
+        ("деление с запятой во встроенном коде",
+         'python3 -c "m = t / 60,1" > docs/out.txt', "allow"),
+        ("имя слэш-команды в шаблоне grep",
+         'echo "=== применялся ли feature.js ==="; grep -rl "feature.js\\|/feature" sessions/*.md 2>/dev/null | head -3',
+         "allow"),
+        ("деление в теле документа для python",
+         "python3 - <<'PY'\nimport datetime\ndurs = [(b - a).total_seconds() / 60, 1]\nprint(durs)\nPY",
+         "allow"),
+        ("деление на переменную во встроенном коде",
+         "M=60 python3 -c \"\nimport os\nM=int(os.environ['M'])\nprint((b - a).total_seconds()/M)\n\" > docs/out.txt",
+         "allow"),
+        ("регулярное выражение awk в конвейере",
+         "git worktree list --porcelain | awk '/^worktree /{print $2}' | tail -n +2 > docs/out.txt",
+         "allow"),
+        ("слэш внутри echo среди ключей справки",
+         "claude --help 2>&1 | grep -nE 'session-id|--name' | head -30; "
+         'echo "=== --session-id / --name flags ===" > docs/out.txt',
+         "allow"),
+        ("имя слэш-команды в теле документа после &&",
+         "mkdir -p docs/roles && cat > docs/roles/executor.md <<'MD'\n"
+         "Многошаговая задача идёт через `/feature`.\nMD",
+         "allow"),
+        ("имя слэш-команды в теле pull request",
+         "gh pr create --base main --head chore/x --title x --body-file - <<'BODY' 2>&1 | tail -3\n"
+         "Цикл описан в `/feature`.\nBODY",
+         "allow"),
+        ("деление в теле документа, считающем пропуски",
+         "python3 - <<'PY'\nimport json, time\nd = json.load(open('.claude/state/unlock.json', encoding='utf-8'))\n"
+         "for z, r in d.items():\n    print(z, (r['until'] - time.time()) / 60)\nPY",
+         "allow"),
+        ("имя слэш-команды внутри правки документа",
+         "python3 - <<'PY'\nimport io\nedits = [\n (\"docs/WORKFLOW.md\",\n"
+         "  '| Запускает | сэр: «Карина» или `/karina` | Карина: `claude --bg` |',\n"
+         "  '| Запускает | сэр или `/karina` | Карина |'),\n]\n"
+         "for path, old, new in edits:\n    s = io.open(path, encoding='utf-8').read()\n"
+         "    io.open(path, 'w', encoding='utf-8').write(s.replace(old, new))\nPY",
+         "allow"),
+        ("слова из русского текста после слэша",
+         "echo /code /summary /Отменить > docs/x.md", "allow"),
+        ("флаги регулярного выражения в теле документа",
+         "cat > f.py <<'PY'\nflags = '/gm'\nPY", "allow"),
+        # Единственный настоящий отказ дня: запись в память Claude Code
+        # за пределами репозитория. Граница сработала верно и обязана
+        # срабатывать дальше — без этой строки предыдущие пятнадцать
+        # доказывали бы только то, что проверка выключена.
+        ("настоящая запись наружу — отказ остаётся",
+         'python3 -c "open(\'/Users/rashit/.claude/projects/x/memory/note.md\',\'w\').write(\'x\')"',
+         "deny"),
+    ]
+    for title, cmd, expected in real_refusals:
+        got = decision_of(run("guard-scope.py",
+                              {"tool_name": "Bash", "tool_input": {"command": cmd}}))
+        ok = got == expected
+        failures += 0 if ok else 1
+        print("    %s %-62s ожидали %-5s получили %s" % ("✓" if ok else "✗", title, expected, got))
+
     # Случай 8 из задачи — тот же класс, но в guard-protected-files: имя файла
     # правил в ТЕКСТЕ задания, записываемом в другой файл. Сам хук не правится,
     # чинится общий _paths.py, поэтому проверяется здесь же.
