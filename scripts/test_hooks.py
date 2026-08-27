@@ -305,6 +305,123 @@ CASES = [
     ("guard-protected-files.py", "прогон тестов не считается правкой",
      {"tool_name": "Bash", "tool_input": {"command": "python3 scripts/test_hooks.py"}}, "allow"),
 
+    # --- issue #175: список защищённых путей. Обе ошибки — про якоря ---
+    # Якорь конца строки требовал, чтобы имя файла на нём и кончалось; якорь
+    # слэша требовал, чтобы путь каталога продолжался. Первый пропускал соседа
+    # с лишним сегментом в имени, второй — сам каталог. Каждая форма правки
+    # стоит здесь отдельным кейсом, как требует приёмка, и к каждой — пара
+    # «читать по-прежнему можно»: защита не должна стать запретом смотреть.
+    ("guard-protected-files.py", "локальные настройки: файловый инструмент",
+     {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/.claude/settings.local.json"}}, "deny"),
+    ("guard-protected-files.py", "локальные настройки: перенаправление",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{}' > .claude/settings.local.json"}}, "deny"),
+    ("guard-protected-files.py", "локальные настройки: sed -i",
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i '' s/x/y/ .claude/settings.local.json"}}, "deny"),
+    ("guard-protected-files.py", "локальные настройки: встроенный код",
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c \"open('.claude/settings.local.json','w').write('{}')\""}}, "deny"),
+    ("guard-protected-files.py", "локальные настройки: чтение разрешено",
+     {"tool_name": "Read", "tool_input": {"file_path": ROOT + "/.claude/settings.local.json"}}, "allow"),
+    ("guard-protected-files.py", "локальные настройки: чтение командой разрешено",
+     {"tool_name": "Bash", "tool_input": {"command": "cat .claude/settings.local.json"}}, "allow"),
+
+    # Каталог целиком. Механизм защищал содержимое от изменения и не защищал
+    # от исчезновения вместе с папкой — слой хуков снимался одной командой.
+    ("guard-protected-files.py", "каталог хуков удаляется целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/hooks"}}, "deny"),
+    ("guard-protected-files.py", "каталог хуков переносится целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "mv .claude/hooks /tmp/x"}}, "deny"),
+    ("guard-protected-files.py", "каталог конфигурации CI удаляется целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .github/workflows"}}, "deny"),
+    ("guard-protected-files.py", "обход каталога хуков разрешён",
+     {"tool_name": "Bash", "tool_input": {"command": "ls -la .claude/hooks"}}, "allow"),
+
+    # Соседи по каталогу состояния и журнал: отметка о прогоне подделывается
+    # так же, как пропуск, а стёртый журнал — это стёртое доказательство того,
+    # что механизм срабатывал.
+    ("guard-protected-files.py", "отметка о прогоне подделывается",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{}' > .claude/state/verify.json"}}, "deny"),
+    ("guard-protected-files.py", "каталог состояния удаляется целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/state"}}, "deny"),
+    ("guard-protected-files.py", "журнал отказов стирается",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -f .claude/logs/guard.jsonl"}}, "deny"),
+    ("guard-protected-files.py", "журнал отказов читается",
+     {"tool_name": "Bash", "tool_input": {"command": "tail -3 .claude/logs/guard.jsonl"}}, "allow"),
+
+    # Правила проекта: имя с добавленным сегментом — тот же файл правил.
+    ("guard-protected-files.py", "локальные правила проекта защищены",
+     {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/CLAUDE.local.md"}}, "deny"),
+    ("guard-protected-files.py", "локальные правила проекта читаются",
+     {"tool_name": "Read", "tool_input": {"file_path": ROOT + "/CLAUDE.local.md"}}, "allow"),
+    # Форма атомарной записи: временный файл рядом и переименование.
+    ("guard-protected-files.py", "временный файл пропусков защищён",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{}' > .claude/state/unlock.json.tmp-1"}}, "deny"),
+    # Пара к сужению имени: сосед, которого в семье нет, защитой не накрыт.
+    ("guard-protected-files.py", "чужой файл с похожим именем не защищён",
+     {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/docs/settings.json"}}, "allow"),
+    ("guard-protected-files.py", "каталог с похожим именем не защищён",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/hooks-draft"}}, "allow"),
+
+    # Каталог обвязки и каталог CI целиком — тот же промах якоря на уровень
+    # выше. Показано ревьюером результата: `rm -rf .claude` уносит хуки,
+    # настройки, пропуски и журнал разом, и до правки проходило без пропуска.
+    ("guard-protected-files.py", "каталог обвязки удаляется целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude"}}, "deny"),
+    ("guard-protected-files.py", "каталог обвязки переименовывается",
+     {"tool_name": "Bash", "tool_input": {"command": "mv .claude .claude-off"}}, "deny"),
+    ("guard-protected-files.py", "содержимое обвязки сносится глобом",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/*"}}, "deny"),
+    ("guard-protected-files.py", "каталог CI удаляется целиком",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf .github"}}, "deny"),
+    ("guard-protected-files.py", "обвязка перекрывается копией",
+     {"tool_name": "Bash", "tool_input": {"command": "cp -r backup/hooks/. .claude/"}}, "deny"),
+
+    # Регистр: файловая система здесь регистронезависимая, и `claude.md` —
+    # тот же файл, что CLAUDE.md. Проверено os.path.exists на живом дереве.
+    ("guard-protected-files.py", "правила проекта в другом регистре",
+     {"tool_name": "Bash", "tool_input": {"command": "echo x >> claude.md"}}, "deny"),
+    ("guard-protected-files.py", "каталог хуков в другом регистре",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -f .Claude/hooks/guard-git.py"}}, "deny"),
+
+    # Механизмы, чья рабочая часть лежит вне каталога хуков. Сканер инъекций
+    # импортируется хуком из scripts/ и при неудаче импорта молча подменяется
+    # заглушкой; набор проверок делает зелёными сразу шаг CI и гейт качества.
+    ("guard-protected-files.py", "сканер скрытых инструкций выхолащивается",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'def find_markers(t): return []' > scripts/scan_untrusted.py"}}, "deny"),
+    ("guard-protected-files.py", "набор проверок выхолащивается",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'CASES = []' > scripts/test_hooks.py"}}, "deny"),
+    ("guard-protected-files.py", "тело проверки CI подменяется",
+     {"tool_name": "Bash", "tool_input": {"command": "echo 'exit 0' > scripts/ci/test.sh"}}, "deny"),
+    ("guard-protected-files.py", "выбор стека CI подменяется",
+     {"tool_name": "Bash", "tool_input": {"command": "echo none > .ci-stack"}}, "deny"),
+    ("guard-protected-files.py", "список MCP-серверов заводится",
+     {"tool_name": "Bash", "tool_input": {"command": "echo '{}' > .mcp.json"}}, "deny"),
+
+    # Имя без слэша: разбор считает путём только токен со слэшем, поэтому
+    # CLAUDE.md во всех формах, кроме перенаправления, держится не на пути,
+    # а на упоминании. Показано ревьюером результата; кейсы стоят затем, чтобы
+    # сужение разбора в #166 не сняло защиту молча.
+    ("guard-protected-files.py", "правила проекта удаляются по имени",
+     {"tool_name": "Bash", "tool_input": {"command": "rm CLAUDE.md"}}, "deny"),
+    ("guard-protected-files.py", "правила проекта обнуляются touch",
+     {"tool_name": "Bash", "tool_input": {"command": "touch CLAUDE.md"}}, "deny"),
+    ("guard-protected-files.py", "правила проекта правятся sed -i по имени",
+     {"tool_name": "Bash", "tool_input": {"command": "sed -i '' s/x/y/ CLAUDE.md"}}, "deny"),
+    ("guard-protected-files.py", "правила проекта перекрываются копией",
+     {"tool_name": "Bash", "tool_input": {"command": "cp /tmp/x CLAUDE.md"}}, "deny"),
+
+    # Пары к расширению списка: соседи, которые механизмом не являются,
+    # защитой не накрыты, а каталоги остаются проходимыми.
+    ("guard-protected-files.py", "обычный каталог документов сносится",
+     {"tool_name": "Bash", "tool_input": {"command": "rm -rf docs/plans"}}, "allow"),
+    ("guard-protected-files.py", "QA-скрипт правится без пропуска",
+     {"tool_name": "Bash", "tool_input": {"command": "echo x > scripts/qa/lib.mjs"}}, "allow"),
+    ("guard-protected-files.py", "приёмочный сценарий правится без пропуска",
+     {"tool_name": "Bash", "tool_input": {"command": "echo x > scripts/acceptance.sh"}}, "allow"),
+    ("guard-protected-files.py", "обход каталога обвязки разрешён",
+     {"tool_name": "Bash", "tool_input": {"command": "ls -la .claude"}}, "allow"),
+    ("guard-protected-files.py", "шаблон задачи читается",
+     {"tool_name": "Bash", "tool_input": {"command": "cat .github/ISSUE_TEMPLATE/role-task.yml"}}, "allow"),
+
     # --- issue #54: перенаправление состояния — это и есть выдача пропуска ---
     # Пара к сужению: набор получил право уводить состояние к себе, значит
     # сессия агента этого права получить не должна. Переменная, указывающая,
@@ -1097,11 +1214,22 @@ def _main():
     issue_unlock = ("guard-protected-files.py",
                     {"tool_name": "Bash", "tool_input": {"command": "bash scripts/unlock.sh protected-files 60"}})
 
+    # Приёмка #175 требует обе половины: без пропуска отклоняется, с пропуском
+    # проходит. Новые пути списка проверяются на обеих — иначе расширение
+    # списка могло бы оказаться запретом без клапана.
+    edit_local = ("guard-protected-files.py",
+                  {"tool_name": "Write", "tool_input": {"file_path": ROOT + "/.claude/settings.local.json"}})
+    drop_hooks_dir = ("guard-protected-files.py",
+                      {"tool_name": "Bash", "tool_input": {"command": "rm -rf .claude/hooks"}})
     unlock_cases = [
         ("открытая зона пропускает правку правил", {"protected-files": live}, edit_settings, "allow"),
         ("просроченный пропуск не действует", {"protected-files": stale}, edit_settings, "deny"),
         ("пропуск чужой зоны не открывает эту", {"git-branch": live}, edit_settings, "deny"),
         ("своя зона открывает свою операцию", {"git-branch": live}, make_branch, "allow"),
+        ("открытая зона пропускает локальные настройки", {"protected-files": live}, edit_local, "allow"),
+        ("без пропуска локальные настройки отклоняются", {}, edit_local, "deny"),
+        ("открытая зона пропускает снос каталога хуков", {"protected-files": live}, drop_hooks_dir, "allow"),
+        ("без пропуска каталог хуков не сносится", {}, drop_hooks_dir, "deny"),
         ("по пропуску нельзя выдать себе пропуск", {"protected-files": live}, issue_unlock, "deny"),
     ]
     for title, zones, (hook, payload), expected in unlock_cases:
