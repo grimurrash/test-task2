@@ -1054,32 +1054,34 @@ def check_hook_failures(log_path):
         print("    %s %-24s %s" % ("✓" if ok else "✗", hook[:-3], detail))
 
     # Поломка, записанная как обычный отказ, выглядит строгостью — и тогда её
-    # никто не чинит. Событие в журнале обязано называть сбой сбоем.
+    # никто не чинит. Событие в журнале обязано называть сбой сбоем. Проверяются
+    # оба пути: перехват исключения и выход кодом, который перехват не видит.
     print("    — след в журнале отличим от обычного отказа")
-    hook = hooks[0]
-    d = broken_copy(hook, "main")
-    before = _size(log_path)
-    try:
-        run(hook, HARMLESS, hooks_dir=d, launcher=True)
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
-    tail = _tail(log_path, before)
-    rec = {}
-    for line in tail.strip().splitlines():
+    for fault, title in (("main", "исключение"), ("exit1", "выход кодом 1")):
+        hook = hooks[0]
+        d = broken_copy(hook, fault)
+        before = _size(log_path)
         try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-    for title, ok, detail in [
-        ("событие названо своим именем, а не deny",
-         rec.get("event") == "hook-error" and '"event": "deny"' not in tail,
-         "event=%s" % rec.get("event", "<записи нет>")),
-        ("названы хук и исключение",
-         rec.get("guard") == hook[:-3] and FAULT in json.dumps(rec, ensure_ascii=False),
-         "guard=%s" % rec.get("guard", "—")),
-    ]:
-        failures += 0 if ok else 1
-        print("    %s %-52s %s" % ("✓" if ok else "✗", title, detail))
+            run(hook, HARMLESS, hooks_dir=d, launcher=True)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+        tail = _tail(log_path, before)
+        rec = {}
+        for line in tail.strip().splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        named = rec.get("event") == "hook-error" and '"event": "deny"' not in tail
+        whose = rec.get("guard") == hook[:-3]
+        for check, ok, detail in [
+            ("событие названо своим именем, а не deny (%s)" % title, named,
+             "event=%s" % rec.get("event", "<записи нет>")),
+            ("названы хук и сбой (%s)" % title, whose and bool(rec.get("error")),
+             "guard=%s" % rec.get("guard", "—")),
+        ]:
+            failures += 0 if ok else 1
+            print("    %s %-52s %s" % ("✓" if ok else "✗", check, detail))
 
     # Запасной барьер. Если решение печатать некуда, остаётся код 2 — для
     # PreToolUse он блокирует так же, только без причины. Это единственный
