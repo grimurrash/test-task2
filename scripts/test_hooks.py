@@ -9,8 +9,10 @@
 """
 # scan-untrusted: allow-samples — набор держит образцы инъекций по долгу службы:
 # на них проверяется, что scan-untrusted их находит и называет вслух.
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -512,6 +514,7 @@ ALREADY_CAUGHT = [
 # Заполняется в main() временным каталогом; боевые .claude/state и .claude/logs
 # за прогон не открываются ни на чтение, ни на запись.
 STATE_DIR = None
+STATE_ENV = "CLAUDE_HOOK_" + "STATE_DIR"
 
 def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None,
         launcher=False, raw=None):
@@ -1112,10 +1115,77 @@ def project_copy(hook=None, fault=None):
 
 def run_call(command, root, payload):
     """Запуск ровно так, как это делает обвязка: строкой из настроек, через
-    оболочку, с CLAUDE_PROJECT_DIR на заданном корне."""
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=root, CLAUDE_HOOK_STATE_DIR=STATE_DIR)
+    оболочку, с CLAUDE_PROJECT_DIR на заданном корне.
+
+    Каталог состояния здесь НЕ задаётся, и это не упущение. Все остальные пути
+    набора его задают, а в живой сессии этой переменной нет никогда — значит
+    вооружение, случайно или намеренно поставленное в зависимость от неё, было
+    бы зелёным у набора и мёртвым в бою. Найдено ревью результата ровно такой
+    диверсией: под наблюдением набора отказ, без него — код 1 и пропуск.
+    Писать хуку всё равно есть куда: корень указывает на копию дерева.
+    """
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=root)
+    env.pop(STATE_ENV, None)
     return subprocess.run(["sh", "-c", command], input=json.dumps(payload),
                           capture_output=True, text=True, env=env, timeout=60)
+
+# Под каким матчером стоит хук — часть механизма, а не оформление: снятый
+# матчер выключает хук целиком, и ни один динамический кейс этого не увидит,
+# потому что все они зовут хук сами. Ожидание списано с таблицы «Что стоит»
+# в docs/HOOKS.md: расхождение кода с документом здесь и есть находка.
+COVERAGE = {
+    "guard-secrets.py": ["Bash", "Read", "Grep", "Glob", "Write", "Edit",
+                         "MultiEdit", "NotebookEdit"],
+    "guard-git.py": ["Bash"],
+    "guard-roles.py": ["Bash"],
+    "guard-scope.py": ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"],
+    "guard-protected-files.py": ["Bash", "Write", "Edit", "MultiEdit",
+                                 "NotebookEdit"],
+}
+
+def matcher_gaps():
+    """Инструменты, на которых хук обязан стоять, но не стоит."""
+    with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    groups = []
+    for group in cfg.get("hooks", {}).get("PreToolUse", []):
+        names = []
+        for item in group.get("hooks", []):
+            if item.get("type") != "command":
+                continue
+            timeout = item.get("timeout")
+            if timeout is not None and timeout < 30:
+                names = []          # срок короче работы хука — тот же выключатель
+                break
+            names.append(item.get("command", "").strip().split()[-1]
+                         .strip('"').rsplit("/", 1)[-1])
+        groups.append((group.get("matcher", ""), names))
+    gaps = []
+    for hook, tools in sorted(COVERAGE.items()):
+        for tool in tools:
+            covered = False
+            for matcher, names in groups:
+                if hook not in names:
+                    continue
+                try:
+                    if re.fullmatch(matcher, tool):
+                        covered = True
+                        break
+                except re.error:
+                    continue
+            if not covered:
+                gaps.append("%s не стоит на %s" % (hook[:-3], tool))
+    return gaps
+
+def event_name_of(proc):
+    """Имя события в решении. По нему обвязка решение и опознаёт: подменённое
+    молча превращает отказ в ничто, а проверка, смотрящая только на
+    permissionDecision, этого не видит. Найдено ревью результата."""
+    try:
+        return json.loads((proc.stdout or "").strip())[
+            "hookSpecificOutput"]["hookEventName"]
+    except Exception:
+        return ""
 
 def check_hook_failures(log_path):
     """Раздел про #156. Печатает себя сам, возвращает число провалов."""
@@ -1134,6 +1204,12 @@ def check_hook_failures(log_path):
     print("    %s каждый хук из каталога стоит на входе%s"
           % ("✓" if ok else "✗",
              "" if ok else ": НЕ ПОДКЛЮЧЕНЫ %s" % ", ".join(missing)))
+
+    gaps = matcher_gaps()
+    ok = not gaps
+    failures += 0 if ok else 1
+    print("    %s каждый хук стоит на своих инструментах%s"
+          % ("✓" if ok else "✗", "" if ok else ": " + "; ".join(gaps[:4])))
 
     no_hostile = [h for h in hooks if h not in HOSTILE]
     ok = not no_hostile
@@ -1160,7 +1236,8 @@ def check_hook_failures(log_path):
             # тикет запрещает — «хук заканчивается трассировкой».
             named = hook[:-3] in reason and ("разбор не завершён" in reason
                                              or "не выдал решения" in reason)
-            ok = got == "deny" and proc.returncode == 0 and named
+            ok = (got == "deny" and proc.returncode == 0 and named
+                  and event_name_of(proc) == "PreToolUse")
             failures += 0 if ok else 1
             print("    %s %-24s %-38s deny=%-5s код=%d причина=%s"
                   % ("✓" if ok else "✗", hook[:-3], title, got == "deny",
@@ -1223,11 +1300,14 @@ def check_hook_failures(log_path):
         d = broken_copy(hook, None)
         try:
             passed = decision_of(run(hook, HARMLESS, hooks_dir=d, launcher=True))
-            blocked = decision_of(run(hook, HOSTILE[hook], hooks_dir=d,
-                                      launcher=True)) if hook in HOSTILE else None
+            hostile_proc = run(hook, HOSTILE[hook], hooks_dir=d, launcher=True)
+            blocked = decision_of(hostile_proc)
         finally:
             shutil.rmtree(d, ignore_errors=True)
-        ok = passed == "allow" and blocked == "deny"
+        # Имя события проверяется и здесь: это штатный отказ, а не путь сбоя.
+        # Подмена в decide() выключила бы блокировку всего слоя разом.
+        ok = (passed == "allow" and blocked == "deny"
+              and event_name_of(hostile_proc) == "PreToolUse")
         failures += 0 if ok else 1
         print("    %s %-24s README пропущен: %s, свой запретный случай: %s"
               % ("✓" if ok else "✗", hook[:-3], passed, blocked))
@@ -1310,13 +1390,72 @@ def check_hook_failures(log_path):
           % ("✓" if ok else "✗", "недоступный stdout не превращается в пропуск", rc))
     return failures
 
+class Counting(io.TextIOBase):
+    """Считает напечатанные проверки, не мешая печати.
+
+    Нужен ради числа в docs/HOOKS.md. Пока оно правится руками, оно отстаёт
+    на каждой итерации — ревью результата ловило расхождение дважды подряд.
+    Число, которое документ обещает, — такое же утверждение о механизме, как
+    и всё остальное в нём, и подкрепляется так же: прогоном.
+
+    Наблюдательный блок в конце не считается: он печатает не проверки, а то,
+    что застал, и его строки зависят от соседних сессий, а не от этого кода.
+    """
+    STOP = "наблюдение, не проверка"
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.checks = 0
+        self.counting = True
+
+    def write(self, text):
+        if self.counting:
+            for line in text.splitlines():
+                if self.STOP in line:
+                    self.counting = False
+                    break
+                if "✓" in line or "✗" in line:
+                    self.checks += 1
+        return self.stream.write(text)
+
+    def flush(self):
+        self.stream.flush()
+
+def check_doc_count(counted):
+    """Число проверок в docs/HOOKS.md против прогона."""
+    path = os.path.join(ROOT, "docs", "HOOKS.md")
+    promised = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            m = re.search(r"—\s*(\d+)\s*провер", fh.read())
+        promised = int(m.group(1)) if m else None
+    except OSError:
+        pass
+    ok = promised == counted
+    print("\n  %s документ обещает проверок: %s, прогон дал: %d"
+          % ("✓" if ok else "✗", promised if promised is not None else "<не нашлось>",
+             counted))
+    return 0 if ok else 1
+
 def main():
     global STATE_DIR
     # Каталог состояния прогона. Всё, что хуки пишут за время проверки, лежит
     # здесь и удаляется вместе с ним; боевые файлы не открываются на запись.
     STATE_DIR = tempfile.mkdtemp(prefix="hooks-state-", dir=_scratch_dir_outside_tmp())
+    counter = Counting(sys.stdout)
     try:
-        return _main()
+        sys.stdout = counter
+        try:
+            failed = _main()
+        finally:
+            sys.stdout = counter.stream
+        # Сверка идёт после итога: полное число проверок известно только
+        # тогда, когда всё напечатано. Поэтому при расхождении итог
+        # дописывается второй строкой, а код возврата — общий.
+        doc = check_doc_count(counter.checks)
+        if doc:
+            print("\nПРОВАЛОВ: 1 (число проверок в документе разошлось с прогоном)")
+        return 1 if (failed or doc) else 0
     finally:
         shutil.rmtree(STATE_DIR, ignore_errors=True)
 
