@@ -195,6 +195,49 @@ describe('@req F7b #73 · заголовок, присланный дважды'
   });
 });
 
+describe('@req F7c #182 · запятая и точка запрещены в ключе', () => {
+  it('запятая внутри одиночного значения отклоняется', async () => {
+    await withServer(async (send) => {
+      const res = await post(send, ['Idempotency-Key: order-42,retry-1']);
+
+      assert.equal(res.status, 400);
+      assert.equal(errorCode(res), 'invalid_idempotency_key');
+    });
+  });
+
+  it('точка внутри одиночного значения отклоняется', async () => {
+    await withServer(async (send) => {
+      const res = await post(send, ['Idempotency-Key: order-42.retry-1']);
+
+      assert.equal(res.status, 400);
+      assert.equal(errorCode(res), 'invalid_idempotency_key');
+    });
+  });
+
+  /**
+   * До этого запрета склейка дублей за прокси проходила: `rawHeaders`
+   * различает два настоящих заголовка, но не видит одного, уже склеенного
+   * инфраструктурой в `«K, K»` — и такой запрос принимался как честный
+   * повтор с чужим ключом (см. openapi.yaml, IdempotencyKey). Запрет запятой
+   * ловит этот случай тем же кодом, не дожидаясь `rawHeaders`: значение
+   * приходит **одним** заголовком, как после склейки, и всё равно отвергается.
+   */
+  it('одиночный заголовок вида «K, K» — след склейки за прокси — тоже отклоняется', async () => {
+    await withServer(async (send) => {
+      const res = await post(send, ['Idempotency-Key: outcome-key, outcome-key']);
+
+      assert.equal(res.status, 400);
+      assert.equal(errorCode(res), 'invalid_idempotency_key');
+    });
+  });
+
+  it('дефис и подчёркивание — не под запретом', async () => {
+    await withServer(async (send) => {
+      assert.equal((await post(send, ['Idempotency-Key: order-42_retry-1'])).status, 201);
+    });
+  });
+});
+
 describe('@req F7c @req F21 #75 · длина ключа в символах, а не в байтах', () => {
   // Значение заголовка приходит побайтно: кириллическая буква — два байта.
   const cyrillic = (count: number) => Buffer.from('к'.repeat(count), 'utf8').toString('latin1');
