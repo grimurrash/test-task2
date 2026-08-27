@@ -67,11 +67,37 @@ nothing() {
 }
 
 CLONE_DIR=""
+CLONE_DIR_REPO=""
 STAND_UP=0
+
+# Уборка идёт ИЗ КАТАЛОГА КЛОНА, а не из его родителя. В первой редакции здесь
+# стоял `$CLONE_DIR`, тогда как `compose.yaml` лежит в `$CLONE_DIR/repo`:
+# compose не находил конфигурацию, ошибка глушилась `2>&1`, и стенд оставался
+# жить — а клон удалялся. Следующий прогон падал бы на занятом порту, то есть
+# уборка ломала ровно ту повторяемость, ради которой скрипт написан. Нашёл
+# внешний ревьюер (codex), не автор.
+#
+# Запасной путь на случай, когда клона уже нет: контейнеры проекта снимаются
+# по метке compose. Уборка не должна зависеть от того, что уцелело на диске.
 cleanup() {
-  if [ "$STAND_UP" = "1" ] && [ -n "$CLONE_DIR" ] && [ -d "$CLONE_DIR" ]; then
+  if [ "$STAND_UP" = "1" ]; then
     printf '\n  · убираю стенд (контейнеры, сети, тома)\n'
-    (cd "$CLONE_DIR" && docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1)
+    local removed=0
+    if [ -n "$CLONE_DIR_REPO" ] && [ -f "$CLONE_DIR_REPO/compose.yaml" ]; then
+      if (cd "$CLONE_DIR_REPO" && docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1); then
+        removed=1
+      fi
+    fi
+    if [ "$removed" != "1" ]; then
+      local leftovers
+      leftovers="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)"
+      if [ -n "$leftovers" ]; then
+        # shellcheck disable=SC2086
+        docker rm -f $leftovers >/dev/null 2>&1
+        printf '  · стенд снят по метке проекта: compose-файл уже недоступен\n'
+      fi
+      docker network rm "${PROJECT}_default" >/dev/null 2>&1
+    fi
   fi
   [ -n "$CLONE_DIR" ] && rm -rf "$CLONE_DIR"
 }
