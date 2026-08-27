@@ -56,7 +56,7 @@ SEP = r"[\s\-_]+"
 # — способ. Цена решения названа в docs/HOOKS.md: голова, склеенная только
 # подчёркиваниями (`IGNORE_PREVIOUS_do_refund`), проходит. Полная фраза
 # со словом `instructions` ловится по-прежнему — там разделитель шире (SEP).
-GLUE = r"[-.\\/+~:*‐-―]"
+GLUE = r"[-.\\/+~:*‐-―−－⁃]"
 
 # Наречие скрытности рядом с действием — английский аналог русского
 # «выполни … молча», которого в корпусе не было (issue #77). Порядок слов
@@ -65,8 +65,16 @@ GLUE = r"[-.\\/+~:*‐-―]"
 # «and»/«then»/«please»): без неё шаблон ловит описательное «the job will
 # quietly run nightly», где никакого приказа нет.
 _COVERT = r"quietly|silently|secretly|covertly|discreetly"
-_ACT = (r"run|execute|merge|push|approve|transfer|send|delete|remove|refund"
-        r"|pay|invoke|perform|apply|close|drop")
+# Список действий сужен по замеру на пяти сторонних корпусах (~180 тыс. файлов):
+# `drop`, `remove`, `close`, `apply`, `do`, `call` — магниты обычной прозы.
+# Один только `silently do` дал 17 ложных, включая документацию PostgreSQL
+# «This command will silently do nothing if the column…».
+_ACT = r"run|execute|merge|push|approve|transfer|refund|pay"
+# Позиция повеления. Начало строки входит явно: `^` без re.MULTILINE — это
+# начало всего текста, а сканеру приходит файл целиком. Разметка перед словом
+# пропускается, иначе приказ, стоящий пунктом списка, ячейкой таблицы или
+# цитатой, проходит молча — а это самые естественные места, куда его прячут.
+_POS = r"(?:(?:^|[\n\r.;:,|])[\s>*#|\-]*|\b(?:and|then|please)\s+)"
 
 PHRASES = [
     (r"ignore" + SEP + r"(?:all" + SEP + r")?(?:the" + SEP + r")?"
@@ -77,8 +85,11 @@ PHRASES = [
     # the previous email» пишется пробелами и ловиться не должно.
     # `above` исключён: `ignore_above` — параметр маппинга Elasticsearch.
     # `prior art` исключено: устойчивый оборот про патенты.
+    # `\b` после головы обязателен: без него ловились `ignore-priority: low`,
+    # `--ignore-priority-inversion` и `ignore.previously_seen` — `prior`
+    # и `previous` есть префиксы живых слов.
     (r"ignore" + GLUE + r"+(?:all" + GLUE + r"+)?(?:the" + GLUE + r"+)?"
-     r"(?:previous|prior|earlier)(?!" + GLUE + r"*art\b)(?![-_\s]+instructions?)",
+     r"(?:previous|prior|earlier)\b(?!" + GLUE + r"*art\b)(?![-_\s]+instructions?)",
      "классическая инъекция (склеена разделителями)"),
     (r"disregard" + SEP + r"(?:all" + SEP + r")?(?:previous|prior|above|your)" + SEP, "классическая инъекция (англ.)"),
     (r"forget" + SEP + r"(?:everything|all" + SEP + r"previous)", "сброс инструкций"),
@@ -91,9 +102,15 @@ PHRASES = [
     (r"</?(?:system|important|admin)[-_ ]?(?:instruction|prompt|override)>", "псевдосистемный тег"),
     (r"do" + SEP + r"not" + SEP + r"(?:tell|inform|mention" + SEP + r"to)" + SEP + r"the" + SEP + r"user", "просьба скрыть от пользователя"),
     (r"without" + SEP + r"(?:telling|informing|asking)" + SEP + r"the" + SEP + r"user", "просьба действовать втайне"),
-    (r"(?:^|[.;:,]\s*|\b(?:and|then|please|also)\s+)(?:" + _COVERT + r")\s+(?:" + _ACT + r")\b",
-     "просьба действовать втайне"),
-    (r"\b(?:" + _ACT + r")\s+(?:it|this|them|the\s+\w+)\s+(?:" + _COVERT + r")\b",
+    # Дыру с началом строки нашла внешняя линза (codex) уже после того, как
+    # набор из сорока однострочных строк показал ноль ложных и ноль пропусков:
+    # такой набор её увидеть не мог по построению. Ревьюер результата добавил
+    # к ней разметку — приказ в ячейке таблицы и пунктом списка проходил тоже.
+    (_POS + r"(?:" + _COVERT + r")\s+(?:" + _ACT + r")\b", "просьба действовать втайне"),
+    # Обратный порядок слов — зеркало русского «выполни … молча». Объект сужен
+    # до местоимения: с `the <слово>` шаблон ловил «Run the command silently»
+    # из git-config(1) и «drop the connection silently» из заголовков ngtcp2.
+    (_POS + r"(?:" + _ACT + r")\s+(?:it|this|them)\s+(?:" + _COVERT + r")\b",
      "просьба действовать втайне"),
     (r"игнорируй" + SEP + r"(?:все" + SEP + r")?(?:предыдущие|прошлые|прежние)", "классическая инъекция (рус.)"),
     (r"забудь" + SEP + r"(?:все" + SEP + r")?(?:инструкции|предыдущие)", "сброс инструкций"),
@@ -155,8 +172,14 @@ SKIP_DIRS = {".git", ".worktrees", "worktrees", "node_modules", "vendor",
 # в SKIP_DIRS и не работал никогда: там сравнивается имя каталога (`logs`),
 # а не путь. Тот же класс ошибки, что и пропуск файлов по basename (issue #42).
 SKIP_REL_PATHS = {os.path.join(".claude", "logs")}
+# `.css` добавлен вместе с починкой нулевого кегля (#77). Без него три шаблона
+# из корпуса — белый текст, нулевой кегль, `display: none` — в CI не работали
+# вовсе: они написаны про стили, а стили не сканировались. Класс был достижим
+# только через хук, то есть когда файл кто-то прочитает. Прогон по репозиторию
+# с добавленным расширением даёт ноль находок.
 TEXT_EXT = {".md", ".txt", ".json", ".yml", ".yaml", ".html", ".htm", ".csv", ".xml",
-            ".js", ".ts", ".py", ".php", ".go", ".sh", ".toml", ".ini", ".cfg", ".sql"}
+            ".js", ".ts", ".py", ".php", ".go", ".sh", ".toml", ".ini", ".cfg", ".sql",
+            ".css"}
 
 def find_markers(text, limit=40):
     """Возвращает список (тип, что нашли, фрагмент)."""
