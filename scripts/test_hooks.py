@@ -21,6 +21,22 @@ ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
 HOME = os.path.expanduser("~")
 
+# issue #147: роль в guard-roles определяется каталогом, и прибор не должен
+# зависеть от того, ОТКУДА его запустили. Внутри рабочей копии `ROOT` — это
+# `.worktrees/<slug>`, поэтому кейс «координатор закрывает тикет», подававший
+# хуку `cwd = ROOT`, описывал не координатора, а исполнителя и честно получал
+# отказ; а кейс «своя рабочая копия» подавал `ROOT/.worktrees/rustem`, где
+# первым вхождением `.worktrees` шло имя чужой копии. Набор был красным из
+# рабочей копии до всякой правки — то есть критерий приёмки «зелёный прогон
+# из своей копии» был недостижим ни для одного исполнителя.
+#
+# Каталоги здесь синтетические и на диске не создаются: `guard-roles` смотрит
+# на строку пути, а не на её содержимое. Проверяется признак, а не место,
+# откуда запущен набор.
+ROLES_MAIN = "/var/tmp/psp-roles-main"
+ROLES_OWN = ROLES_MAIN + "/.worktrees/rustem"
+ROLES_FOREIGN = ".worktrees/salavat"
+
 CASES = [
     ("guard-secrets.py", "чтение .env через cat",
      {"tool_name": "Bash", "tool_input": {"command": "cat .env"}}, "deny"),
@@ -64,20 +80,27 @@ CASES = [
     # исполнитель, всякая другая — координатор. Первые два кейса — пара: одна
     # и та же команда, разный каталог, разное решение.
     ("guard-roles.py", "исполнитель не закрывает тикет",
-     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+     {"tool_name": "Bash", "cwd": ROLES_OWN,
       "tool_input": {"command": "gh issue close 42 --comment готово"}}, "deny"),
     ("guard-roles.py", "координатор закрывает тикет",
-     {"tool_name": "Bash", "cwd": ROOT,
+     {"tool_name": "Bash", "cwd": ROLES_MAIN,
       "tool_input": {"command": "gh issue close 42 --comment готово"}}, "allow"),
     ("guard-roles.py", "чужая рабочая копия закрыта",
-     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
-      "tool_input": {"command": "cat .worktrees/salavat/backend/app.py"}}, "deny"),
+     {"tool_name": "Bash", "cwd": ROLES_OWN,
+      "tool_input": {"command": "cat " + ROLES_FOREIGN + "/backend/app.py"}}, "deny"),
     ("guard-roles.py", "своя рабочая копия открыта",
-     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+     {"tool_name": "Bash", "cwd": ROLES_OWN,
       "tool_input": {"command": "cat .worktrees/rustem/backend/app.py"}}, "allow"),
     ("guard-roles.py", "имя команды в тексте коммита — упоминание",
-     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/rustem",
+     {"tool_name": "Bash", "cwd": ROLES_OWN,
       "tool_input": {"command": "git commit -m 'рапорт вместо gh issue close'"}}, "allow"),
+    # Пара к правке прибора (issue #147). Каталог сессии берётся из события
+    # хука, и решение обязано зависеть только от него. Кейс подаёт настоящую
+    # рабочую копию, в которой лежит этот файл: где бы набор ни был запущен,
+    # для сессии ВНУТРИ `.worktrees/` отказ обязан остаться.
+    ("guard-roles.py", "настоящая рабочая копия — по-прежнему исполнитель",
+     {"tool_name": "Bash", "cwd": ROOT + "/.worktrees/парная-копия",
+      "tool_input": {"command": "gh issue close 42"}}, "deny"),
 
     ("guard-scope.py", "запись в чужую папку",
      {"tool_name": "Write", "tool_input": {"file_path": HOME + "/Downloads/подмена.md"}}, "deny"),
