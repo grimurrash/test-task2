@@ -37,6 +37,12 @@ API_PORT="${API_PORT:-19080}"
 SANDBOX_PORT="${SANDBOX_PORT:-19081}"
 DOCS_PORT="${DOCS_PORT:-19082}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-300}"
+# Потолок на сборку. Нужен не для красоты: `docker compose up --build` при
+# демоне без доступа к реестру не падает, а ВИСИТ — на «resolve image config»
+# без единой строки об ошибке. Зависший прогон хуже любого из трёх исходов:
+# он неотличим от медленного, и ждать его будут ровно столько, сколько
+# хватит терпения. Поймано на первом же прогоне этого скрипта.
+BUILD_TIMEOUT="${BUILD_TIMEOUT:-900}"
 
 SOURCE_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF=""
@@ -113,10 +119,24 @@ step "клон: $CLONE_DIR_REPO ($(cd "$CLONE_DIR_REPO" && git rev-parse --short
 say "Подъём стенда: docker compose up -d --build"
 printf '  (теги образов psp-*:local будут пересобраны из клона — см. шапку скрипта)\n'
 STAND_UP=1
-if ! (cd "$CLONE_DIR_REPO" && API_PORT="$API_PORT" SANDBOX_PORT="$SANDBOX_PORT" DOCS_PORT="$DOCS_PORT" \
-      docker compose -p "$PROJECT" up -d --build); then
-  nothing "образы не собрались или контейнеры не поднялись"
+(cd "$CLONE_DIR_REPO" && API_PORT="$API_PORT" SANDBOX_PORT="$SANDBOX_PORT" DOCS_PORT="$DOCS_PORT" \
+  docker compose -p "$PROJECT" up -d --build) &
+BUILD_PID=$!
+BUILD_WAITED=0
+while kill -0 "$BUILD_PID" 2>/dev/null && [ "$BUILD_WAITED" -lt "$BUILD_TIMEOUT" ]; do
+  sleep 5
+  BUILD_WAITED=$((BUILD_WAITED + 5))
+done
+if kill -0 "$BUILD_PID" 2>/dev/null; then
+  kill "$BUILD_PID" 2>/dev/null
+  wait "$BUILD_PID" 2>/dev/null
+  nothing "подъём стенда не уложился в $BUILD_TIMEOUT с и был прерван.
+Частая причина: демон Docker не может тянуть базовые образы — тогда сборка
+не падает, а висит на «resolve image config» без единой строки об ошибке."
 fi
+wait "$BUILD_PID"
+BUILD_RC=$?
+[ "$BUILD_RC" -eq 0 ] || nothing "образы не собрались или контейнеры не поднялись (код $BUILD_RC)"
 
 BACKEND_ID="$(cd "$CLONE_DIR_REPO" && docker compose -p "$PROJECT" ps -q backend 2>/dev/null)"
 [ -n "$BACKEND_ID" ] || nothing "контейнер backend не создан — мерить нечего"
