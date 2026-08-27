@@ -1226,3 +1226,402 @@ def split_stages(tokens):
             current.append(tok)
     stages.append(current)
     return stages
+
+# --- Признак записи внутри встроенного кода (issue #166) ---
+#
+# Жил в самом хуке. Переехал сюда, потому что тем же признаком решается,
+# считать ли путь, названный в коде, целью записи: два перечисления одного
+# и того же разошлись бы при первой правке.
+#
+# Три расширения против прежней редакции, каждое найдено прогоном:
+#   * формы, уходящие в оболочку (`os.system`, `subprocess`, `child_process`):
+#     сами по себе признака не имели, и после привязки признака к позиции
+#     `python3 -c "import os; os.system('rm <хук>')"` начал бы проходить —
+#     на main он отклоняется;
+#   * `fs.promises.writeFile`: шаблон требовал `fs.` вплотную к имени;
+#   * `fileinput` с `inplace`.
+CODE_WRITE = re.compile(
+    r"open\s*\([^)]*['\"][wax]\+?['\"]"          # open(path, 'w'), 'a', 'x'
+    r"|open\s*\([^)]*['\"]r\+['\"]"              # open(path, 'r+') — тоже запись
+    r"|\bmode\s*=\s*['\"][wax]"
+    r"|\.write(?:lines|_text|_bytes)?\s*\("
+    r"|\bwriteFileSync\b|\bappendFileSync\b|\bfs(?:\.\w+)*\.\w*[Ww]rite\w*\s*\("
+    r"|\b(?:writeFile|appendFile|copyFile|rename|rm|rmdir|mkdir|truncate)\w*\s*\("
+    r"|\bcreateWriteStream\s*\("
+    r"|\b(?:json|yaml|pickle)\.dump\s*\("
+    r"|\b(?:unlink|remove|rmtree|rename|replace|truncate|mkdir|makedirs|chmod|symlink)\s*\("
+    r"|\bshutil\.\w+\s*\("
+    r"|\bfileinput\.\w*\s*\([^)]*inplace"
+    r"|\bos\.(?:system|exec\w*|popen|spawn\w*)\s*\("
+    r"|\bsubprocess\.\w+\s*\(|\bchild_process\b|\bexecSync\s*\(|\bspawnSync\s*\("
+    r"|\bPopen\s*\(",
+    re.I)
+
+# Печать в стандартный поток записью в файл не является. Без этого сужения
+# защита журнала (`.claude/logs/`) дала бы новый класс ложных отказов:
+# однострочник, читающий журнал и печатающий его через `sys.stdout.write`,
+# попадал бы под признак записи наравне с тем, что журнал переписывает.
+STD_STREAM = re.compile(r"\b(?:sys|process)\.(?:stdout|stderr)\b")
+STREAM_WRITE = re.compile(r"«поток»\s*\.\s*write\w*\s*\(")
+DUMP_CALL = re.compile(r"\b(?:json|yaml|pickle)\.dump\s*\(")
+
+def _mask_streams(text):
+    """Печать в стандартный поток — не запись в файл.
+
+    Разбор построчный, а не по вложенности скобок: аргументом выгрузки бывает
+    вложенный вызов (`json.dump(json.load(open(p)), sys.stdout)`), и считать
+    скобки регуляркой — заводить второй разбор рядом с лексером. Строка,
+    где упомянут стандартный поток, теряет признак выгрузки; настоящая запись
+    в той же строке от этого не теряется — её называет другая альтернатива
+    (`open(x, 'w')`), и она остаётся на месте.
+    """
+    out = []
+    for line in (text or "").split("\n"):
+        if STD_STREAM.search(line):
+            line = STD_STREAM.sub("«поток»", line)
+            line = STREAM_WRITE.sub("«печать»(", line)
+            line = DUMP_CALL.sub("«печать»(", line)
+        out.append(line)
+    return "\n".join(out)
+
+def code_writes(*texts):
+    """Есть ли во встроенном коде признак записи — в любом из вариантов текста.
+
+    Проверяются и сырая команда, и нормализованная: `normalize` снимает
+    кавычки, а половина альтернатив на них и держится. Раньше проверка шла
+    только по нормализованной строке, и `python3 -c "f = open('CLAUDE.md','w')"`,
+    `io.open(x, mode='w')` и та же форма документом проходили без пропуска —
+    проверено прогоном.
+    """
+    for text in texts:
+        if not text:
+            continue
+        if CODE_WRITE.search(_mask_streams(text)):
+            return True
+    return False
+
+
+# --- Цели записи: куда команда пишет, а не что она называет (issue #166) ---
+#
+# `path_candidates` отвечает на вопрос «какие пути в команде названы».
+# Этого хватает границе репозитория: там всякое обращение наружу считается
+# записью осознанно. Защите файлов правил этого мало — она отказывала команде,
+# которая защищённый путь только называет, наравне с той, что его правит.
+# По боевому журналу за две смены: 28 уникальных ложных отказов против
+# 21 настоящего, и семь из восьми воспроизводимых ложных — одна причина:
+# признак записи брался по всей строке, путь брался по всей строке, и связи
+# между ответами не было. `rm` по файлу в `/tmp` плюс `git diff` по хуку
+# читались как «команда правит сами хуки».
+#
+# Функция новая, а не переписанная: `guard-scope` продолжает пользоваться
+# `path_candidates` и своего поведения не меняет. Два разбора рядом — цена,
+# заплаченная сознательно: сведение их в один означало бы либо ослабить
+# границу репозитория, либо оставить ложные отказы защите файлов.
+
+# Метка «команда пишет, но куда — разобрать нельзя». Не путь: символ,
+# которого в пути быть не может. Для такой команды правило откатывается
+# к прежнему — слепому поиску упоминания. Незнакомая конструкция трактуется
+# в пользу отказа; это то же правило, по которому здесь живёт встроенный код.
+UNRESOLVED = "\0"
+
+# У этих команд первый позиционный аргумент читается, а пишется последний.
+# `ln` сюда НЕ входит, и это не забывчивость: у жёсткой ссылки правка второго
+# конца меняет первый — проверено прогоном, inode тот же. У `cp` копия
+# самостоятельна, у `ln` — нет.
+SOURCE_KEPT = {"cp", "rsync", "scp", "install"}
+
+# Команды из FS_COMMANDS, которые пишут не всегда: у них признак записи —
+# ключ, а не имя. Без этого `find <каталог> -name '*.py'` стал бы правкой
+# каталога, а `find … -delete` и `tar -x -C <каталог>` не считались бы записью
+# вовсе — обе формы до правки проходили без пропуска, проверено прогоном.
+CONDITIONAL_FS = {
+    "find": ("-delete", "-exec", "-execdir", "-ok", "-okdir",
+             "-fprint", "-fprintf", "-fls"),
+    "tar": ("-x", "--extract", "--get", "-c", "--create", "-r", "--append",
+            "-u", "--update", "--delete", "-A", "--concatenate"),
+}
+
+# Правка на месте: файловые аргументы — цели записи.
+INPLACE = {"sed", "gsed", "perl", "ruby"}
+INPLACE_FLAG = re.compile(r"^-[A-Za-z]*i[A-Za-z]*(?:\..*)?$|^--in-place")
+
+# Строчные редакторы: аргумент — файл, который они меняют.
+LINE_EDITORS = {"ed", "ex"}
+
+# Подкоманды git, которые переписывают рабочее дерево по названным путям.
+# `git checkout <ветка>` сюда не относится: смена ветки — предмет guard-git,
+# и считать её правкой каждого файла означало бы отказывать на любой смене
+# ветки. Названо в docs/HOOKS.md.
+GIT_PATH_SUBS = ("checkout", "restore")
+GIT_BLIND_SUBS = ("apply", "am", "stash")
+
+# Токен, который в принципе может оказаться защищённым путём: защищённые пути
+# состоят из букв, цифр, точки, дефиса, подчёркивания и слэша. Токен
+# с пробелом, вертикальной чертой, запятой или обратным слэшем — это программа
+# sed или perl, а не имя файла. Отбросив такие, потерять защищённую цель
+# нельзя: ни один защищённый путь под это описание не подходит.
+PATHISH = re.compile(r"^[\w.\-/~$*?\[\]]+$")
+
+# Цель, которую разбор не сводит к пути: имя из переменной окружения,
+# подстановка, шаблон xargs.
+DYNAMIC_TARGET = re.compile(r"\$|`|\{\}")
+
+ASSIGNMENT = re.compile(r"^(\w+)=(.*)$", re.S)
+VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+def assignments(tokens):
+    """Присваивания, сделанные в самой команде: `T=/tmp/x … rm -rf "$T"`.
+
+    Нужны затем, чтобы цель записи через переменную не превращалась
+    в «разобрать нельзя» там, где её ЗДЕСЬ ЖЕ и задали. Иначе правило
+    «неразобранная цель — прежний слепой поиск» возвращает ровно те ложные
+    отказы, ради которых задача и заведена: скрипт, кладущий временный
+    каталог в переменную и упоминающий рядом путь к хукам, — обычное дело.
+    """
+    out = {}
+    for tok in tokens:
+        m = ASSIGNMENT.match(tok or "")
+        if m and m.group(2):
+            out[m.group(1)] = m.group(2)
+    return out
+
+def expand(token, names, depth=0):
+    """Подстановка известных присваиваний. Неизвестное имя остаётся как есть —
+    и делает цель неразобранной, что честнее подстановки пустой строки."""
+    if depth > 3 or not token or "$" not in token:
+        return token
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return names[name] if name in names else m.group(0)
+    out = VAR_REF.sub(sub, token)
+    return out if out == token else expand(out, names, depth + 1)
+
+def _git_targets(tokens):
+    """Цели записи у git: пути после `--`, у `restore` — все позиционные."""
+    joined = [t or "" for t in tokens]
+    if any(s in joined for s in GIT_BLIND_SUBS):
+        return [UNRESOLVED]
+    if not any(s in joined for s in GIT_PATH_SUBS):
+        return []
+    if "--" in joined:
+        return [t for t in joined[joined.index("--") + 1:] if t and not t.startswith("-")]
+    if "restore" in joined:
+        i = joined.index("restore")
+        return [t for t in joined[i + 1:] if t and not t.startswith("-")]
+    return []
+
+
+# Команды, у которых цель записи стоит не «в позиции», а названа ключом.
+# Внешнее ревью (codex) показало на трёх сразу: `dd if=<хук> of=/tmp/x`,
+# `tar -cf /tmp/архив <каталог хуков>` и `find <каталог> -exec grep … {} +`
+# получали отказ, хотя читают. Общий признак: у команды есть и вход, и выход,
+# а разбор по позиции их не различал.
+DD_OUT = re.compile(r"^(?:of|conv_of)=(.+)$")
+TAR_EXTRACT = ("-x", "--extract", "--get")
+TAR_CREATE = ("-c", "--create", "-r", "--append", "-u", "--update",
+              "-A", "--concatenate", "--delete")
+TAR_DIR = ("-C", "--directory")
+FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+
+def _dd_targets(tokens):
+    """У dd цель записи — только операнд `of=`; `if=` читается."""
+    out = []
+    for tok in tokens:
+        m = DD_OUT.match(tok or "")
+        if m:
+            out.append(m.group(1))
+    return out
+
+def _flag_value(tokens, flags):
+    """Значение ключа: `-C dir`, `--directory=dir`."""
+    for i, tok in enumerate(tokens):
+        tok = tok or ""
+        for f in flags:
+            if tok == f and i + 1 < len(tokens):
+                return tokens[i + 1]
+            if tok.startswith(f + "="):
+                return tok[len(f) + 1:]
+    return None
+
+def _tar_targets(tokens):
+    """Режим tar решает, что читается, а что пишется.
+
+    Распаковка пишет в каталог назначения (`-C`), а без него — в текущий,
+    и что лежит в архиве, команде не видно: цель есть, но не разобрана.
+    Создание архива, наоборот, ЧИТАЕТ перечисленные пути и пишет в файл
+    архива. Прежняя редакция считала целью всякий позиционный аргумент —
+    и `tar -cf /tmp/hooks.tar .claude/hooks`, обычная резервная копия,
+    получала отказ.
+    """
+    flags = [t or "" for t in tokens]
+    joined = " ".join(flags)
+    def has(opts):
+        for f in flags:
+            if f in opts:
+                return True
+            if f.startswith("-") and not f.startswith("--"):
+                for o in opts:
+                    if len(o) == 2 and o[1] in f[1:]:
+                        return True
+        return False
+    if has(TAR_EXTRACT):
+        dest = _flag_value(tokens, TAR_DIR)
+        return [dest] if dest else [UNRESOLVED]
+    if has(TAR_CREATE):
+        archive = _flag_value(tokens, ("-f", "--file"))
+        if archive:
+            return [archive]
+        # Имя архива идёт следом за связкой ключей с `f`.
+        for i, f in enumerate(flags):
+            if f.startswith("-") and "f" in f and i + 1 < len(flags):
+                return [flags[i + 1]]
+        return [UNRESOLVED]
+    return []
+
+def _find_targets(tokens, depth=0):
+    """`find` пишет по `-delete` и по тому, что запускает через `-exec`.
+
+    Запускать через `-exec` можно и читателя (`grep`), и писателя (`rm`).
+    Поэтому запускаемая команда разбирается своим же разбором, и корни
+    поиска становятся целями только тогда, когда она пишет.
+    """
+    flags = [t or "" for t in tokens]
+    roots = []
+    i = 0
+    while i < len(flags):
+        tok = flags[i]
+        if tok.startswith("-"):
+            break
+        roots.append(tok)
+        i += 1
+    roots = roots[1:] if roots else []          # первое — имя команды
+    if any(f == "-delete" for f in flags):
+        return roots
+    for i, tok in enumerate(flags):
+        if tok in FIND_EXEC:
+            run = []
+            for t in flags[i + 1:]:
+                if t in (";", "\\;", "+"):
+                    break
+                run.append(t)
+            if run and _stage_write_targets(run, depth + 1):
+                return roots
+    return []
+
+def _stage_write_targets(tokens, depth=0, names=None):
+    if not tokens:
+        return []
+    found, redirect_idx = [], set()
+    i = 0
+    while i < len(tokens):
+        if tokens[i] in REDIRECT_OPS and i + 1 < len(tokens):
+            if not DIGITS_ONLY.match(tokens[i + 1] or ""):
+                found.append(tokens[i + 1])
+            redirect_idx.add(i + 1)
+            i += 2
+            continue
+        i += 1
+    is_container, host_paths = container_scope_tokens(tokens)
+    if is_container:
+        # Внутри контейнера писать некуда — что там, то и его. На хосте
+        # пишут только источники томов, они уже собраны отдельно.
+        found.extend(host_paths)
+        return found
+
+    name, name_at = command_at(tokens)
+    if name == "git":
+        found.extend(_git_targets(tokens))
+    if name == "eval":
+        # Аргумент eval — командная строка, а не имя файла. Без этого
+        # `eval "echo x >> <хук>"` уходил из-под разбора целиком.
+        for i, tok in enumerate(tokens):
+            if i != name_at and tok and not tok.startswith("-"):
+                found.extend(write_candidates(tok, depth + 1))
+        return found
+
+    target_stage = _write_target_stage(tokens, name)
+    if name in ("dd", "tar", "find"):
+        # У этих троих вход и выход названы ключами, а не позицией.
+        found.extend({"dd": _dd_targets, "tar": _tar_targets}.get(
+            name, lambda t: _find_targets(t, depth))(tokens))
+        return [expand(t, dict(names or {}, **assignments(tokens)))
+                if t != UNRESOLVED else t for t in found]
+    inplace = name in INPLACE and any(INPLACE_FLAG.match(t or "") for t in tokens)
+    editor = name in LINE_EDITORS
+    out_flags = OUTPUT_FLAGS.get(name, ())
+    inline = inline_code_args(tokens)
+    names = dict(names or {}, **assignments(tokens))
+
+    positional = []
+    for i, token in enumerate(tokens):
+        if i in redirect_idx or i == name_at:
+            continue
+        if i in inline:
+            if inline[i] == "shell":
+                found.extend(write_candidates(token, depth + 1))
+            elif code_writes(token):
+                # Внутри кода с признаком записи не сужаем: разобрать его
+                # нельзя, и всякий названный там путь остаётся целью. Кода
+                # без признака записи это не касается — он читает.
+                found.extend(code_candidates(token, depth + 1))
+            continue
+        if token in STAGE_OPS or token in REDIRECT_OPS or token in ("<", "<<", "<<-"):
+            continue
+        if i and tokens[i - 1] in out_flags:
+            found.append(token)
+            continue
+        if (token or "").startswith("-"):
+            continue
+        if i < name_at and ASSIGNMENT.match(token or ""):
+            continue
+        positional.append(token)
+
+    if target_stage or inplace or editor:
+        take = positional
+        if name in SOURCE_KEPT and len(positional) > 1:
+            take = positional[-1:]
+        if inplace:
+            # Программа sed или perl стоит позиционным аргументом наравне
+            # с именем файла. Отличаем по форме токена, а не по позиции:
+            # `sed -i` бывает и с ключом `-e`, и с расширением после `-i`.
+            take = [t for t in take if t and PATHISH.match(t)]
+        found.extend(take)
+    return [expand(t, names) if t != UNRESOLVED else t for t in found]
+
+def write_candidates(command, depth=0):
+    """Пути, КУДА команда пишет. См. заголовок раздела.
+
+    Возвращает те же строки, что `path_candidates`, но только в позиции цели
+    записи. Может содержать метку UNRESOLVED — «пишет, но куда, разобрать
+    нельзя»; вызывающий обязан трактовать её в пользу отказа.
+    """
+    if depth > MAX_DEPTH:
+        return list(DEPTH_EXCEEDED)
+    text, bodies = split_heredocs(ansi_literals(command or ""))
+    found = []
+    for body, nature in bodies:
+        if nature == "shell":
+            found.extend(write_candidates(body, depth + 1))
+        elif code_writes(body):
+            found.extend(code_candidates(body, depth + 1))
+    for inner in substitutions(text):
+        found.extend(write_candidates(inner, depth + 1))
+    # Присваивания читаются по всей команде: `T=/tmp/x; rm -rf "$T"` —
+    # задано в одной стадии, использовано в другой. Без этого цель
+    # оказывалась неразобранной, и правило «неразобранная цель — прежний
+    # слепой поиск» возвращало те самые ложные отказы, ради которых
+    # задача и заведена.
+    stages = split_stages(tokenize(text))
+    names = {}
+    for stage_tokens in stages:
+        names.update(assignments(stage_tokens))
+    for stage_tokens in stages:
+        found.extend(_stage_write_targets(stage_tokens, depth, names))
+    return found
+
+def unresolved_target(candidates):
+    """Есть ли среди целей записи такая, которую разбор не свёл к пути."""
+    for c in candidates:
+        if c == UNRESOLVED or DYNAMIC_TARGET.search(c or ""):
+            return True
+    return False
