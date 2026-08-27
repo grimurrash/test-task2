@@ -513,7 +513,8 @@ ALREADY_CAUGHT = [
 # за прогон не открываются ни на чтение, ни на запись.
 STATE_DIR = None
 
-def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None):
+def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None,
+        launcher=False):
     # issue #24: сам этот баг проявлялся именно через CLAUDE_PROJECT_DIR —
     # старый код `data.get("cwd")` из JSON вообще не смотрел, только на эту
     # переменную (или os.getcwd() в её отсутствие). project_dir=None — обычный
@@ -534,7 +535,14 @@ def run(hook, payload, project_dir=None, state_dir=None, hooks_dir=None):
     env = dict(os.environ,
                CLAUDE_PROJECT_DIR=project_dir or ROOT,
                CLAUDE_HOOK_STATE_DIR=state_dir or STATE_DIR)
-    proc = subprocess.run([sys.executable, os.path.join(hooks_dir or HOOKS, hook)],
+    # launcher=True — так, как хук запускает обвязка после #156: не файл
+    # напрямую, а запускатель, который ставит перехват падений и уже потом
+    # поднимает цель. Прямой запуск оставлен: им проверяется логика хука,
+    # и перехват в этом не участвует.
+    base = hooks_dir or HOOKS
+    argv = [sys.executable, os.path.join(base, "_run.py"), hook] if launcher \
+        else [sys.executable, os.path.join(base, hook)]
+    proc = subprocess.run(argv,
                           input=json.dumps(payload), capture_output=True,
                           text=True, env=env, timeout=30)
     return proc
@@ -550,6 +558,15 @@ def decision_of(proc):
     except json.JSONDecodeError:
         return "allow"
     return data.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
+
+def reason_of(proc):
+    """Текст причины отказа. Тикет #156 требует не просто deny, а deny
+    с названной причиной: без неё поломка неотличима от строгости."""
+    try:
+        return json.loads((proc.stdout or "").strip())[
+            "hookSpecificOutput"]["permissionDecisionReason"]
+    except Exception:
+        return (proc.stderr or "").strip()
 
 def gate_blocked(proc):
     """gate-quality (Stop) отвечает не в формате PreToolUse: пусто — не
@@ -810,14 +827,16 @@ def snapshot_tree(root):
 #
 # Барьером Claude Code считает код 2 либо код 0 с решением «deny» в JSON.
 # Необработанное исключение даёт код 1 — «неблокирующая ошибка», после которой
-# команда исполняется. Хук, сломавшийся на разборе, не отказывает: он молчит
-# и пропускает. Цена этой ошибки несимметрична — ложный отказ виден сразу,
-# тихий пропуск не виден никогда.
+# команда исполняется. Хук, сломавшийся на разборе, не отказывал: он молчал
+# и пропускал. Цена ошибки несимметрична — ложный отказ виден сразу, тихий
+# пропуск не виден никогда.
 #
-# Живой экземпляр (тысяча вложенных heredoc, RecursionError во всех трёх хуках
-# на Bash) закрыт в #103 и больше не воспроизводится: пять форм того же класса
+# Живой экземпляр из тикета (тысяча вложенных heredoc, RecursionError во всех
+# трёх хуках на Bash) больше не воспроизводится: разбор переписан на токены
+# (#103/#160). Пять форм того же класса — вложенные подстановки, тысяча тел
+# heredoc, 200 КБ одним токеном, тысяча скобок внутри встроенного кода —
 # прогнаны по пяти хукам, код 0 на всех двадцати пяти запусках. Поэтому здесь
-# хук ломается искусственно. Проверяется класс, а не форма, и проверка
+# хук ломается искусственно: проверяется класс, а не форма, и проверка
 # не зависит от того, осталась ли в разборе живая дыра.
 
 FAULT = "искусственный сбой разбора (проверка #156)"
@@ -827,8 +846,8 @@ FAULT = "искусственный сбой разбора (проверка #1
 HARMLESS = {"tool_name": "Bash", "tool_input": {"command": "cat README.md"}}
 
 # То, что каждый хук обязан не пропускать. Нужно, чтобы копия во временном
-# каталоге доказала, что она настоящий хук, а не заглушка, которая «пропускает
-# всё»: иначе парная половина зелёная по построению.
+# каталоге доказала, что она настоящий хук, а не заглушка, пропускающая всё:
+# иначе парная половина зелёная по построению.
 HOSTILE = {
     "guard-secrets.py": {"tool_name": "Bash", "tool_input": {"command": "cat .env"}},
     "guard-git.py": {"tool_name": "Bash",
@@ -836,12 +855,25 @@ HOSTILE = {
     "guard-roles.py": {"tool_name": "Bash",
                        "cwd": os.path.join(ROOT, ".worktrees", "rustem"),
                        "tool_input": {"command": "gh issue close 42"}},
-    "guard-scope.py": {"tool_name": "Bash",
-                       "tool_input": {"command": "echo x > /outside/file"}},
+    "guard-scope.py": {"tool_name": "Write",
+                       "tool_input": {"file_path": os.path.join(
+                           HOME, "Downloads", "подмена.md")}},
     "guard-protected-files.py": {"tool_name": "Edit",
                                  "tool_input": {"file_path": os.path.join(
                                      ROOT, ".claude", "settings.json")}},
 }
+
+# Шесть мест, где хук может умереть по дороге к решению. Первые три покрыл бы
+# и перехват изнутри процесса; последние три — только тем, что перехват стоит
+# в отдельном запускателе, поднимающемся раньше файла хука.
+FAULTS = [
+    ("main", "исключение в main()"),
+    ("module", "исключение на уровне модуля"),
+    ("paths", "исключение при импорте _paths"),
+    ("syntax", "синтаксическая ошибка в файле хука"),
+    ("lib", "не поднялась библиотека хуков"),
+    ("missing", "файла хука нет на месте"),
+]
 
 def pretooluse_hooks():
     """Хуки PreToolUse — читаются из settings.json, а не перечислены здесь.
@@ -856,41 +888,69 @@ def pretooluse_hooks():
     names = []
     for group in cfg.get("hooks", {}).get("PreToolUse", []):
         for item in group.get("hooks", []):
-            name = item.get("command", "").strip().strip('"').rsplit("/", 1)[-1].strip('"')
-            if name.endswith(".py") and name not in names:
+            name = item.get("command", "").strip().split()[-1].strip('"')
+            name = name.rsplit("/", 1)[-1]
+            if name.endswith(".py") and not name.startswith("_") and name not in names:
                 names.append(name)
     return names
 
+def launcher_wraps_everything():
+    """Каждый ли вызов на PreToolUse идёт через запускатель. (bool, сколько всего)
+
+    Проверка структурная и потому честно слабая: она смотрит на строку запуска,
+    а не на поведение. Но забывают именно строку — хук, добавленный в настройки
+    мимо запускателя, останется невооружённым, и ни один динамический кейс ниже
+    этого не заметит: они проверяют то, что запустили, а не то, что записано
+    в настройках.
+    """
+    with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    calls = [item.get("command", "")
+             for group in cfg.get("hooks", {}).get("PreToolUse", [])
+             for item in group.get("hooks", [])]
+    return bool(calls) and all("_run.py" in c for c in calls), len(calls)
+
 def broken_copy(hook, fault):
-    """Копия хука и обеих его библиотек во временном каталоге, куда внесён
-    ровно один искусственный сбой. Возвращает каталог; удаляет вызывающий.
+    """Копия запускателя, хука и обеих библиотек во временном каталоге, куда
+    внесён ровно один искусственный сбой. Возвращает каталог; удаляет вызывающий.
 
     Ломается копия, а не боевой файл: набор не имеет права выключать защиту
     репозитория даже на секунду — рядом работают другие сессии. Копия при этом
-    побайтно та же, кроме одной вставленной строки, и это не берётся на веру:
-    парная половина ниже прогоняет непорченую копию и требует от неё поведения
+    побайтно та же, кроме одной правки, и это не берётся на веру: парная
+    половина ниже прогоняет непорченую копию и требует от неё поведения
     настоящего хука — пропустить README и отказать в своём запретном случае.
 
-    Виды сбоя — три разных места на пути хука к решению:
-      "main"   — исключение первой строкой main(): падение на исполнении;
-      "module" — исключение на уровне модуля, перед main(): хук не дошёл
-                 до кода решения вовсе;
-      "import" — исключение при импорте _paths: падение внутри чужого модуля,
-                 который хук поднимает у себя на старте.
-
-    Последние два — то, ради чего перехват стоит на sys.excepthook, а не
-    на try вокруг main(): try туда не дотягивается.
+    Виды сбоя — шесть разных мест на пути к решению:
+      "main"    — исключение первой строкой main(): падение на исполнении;
+      "module"  — исключение на уровне модуля: хук не дошёл до кода решения;
+      "paths"   — исключение при импорте _paths: падение чужого модуля;
+      "syntax"  — файл хука не компилируется: ни одна его строка не выполнится,
+                  поэтому перехват изнутри файла тут бессилен по построению;
+      "lib"     — не поднялась сама библиотека хуков, то есть то, что обычно
+                  и ставит перехват;
+      "missing" — файла хука нет вовсе.
     """
     d = tempfile.mkdtemp(prefix="hook-fault-", dir=_scratch_dir_outside_tmp())
-    for name in ("_hooklib.py", "_paths.py", hook):
+    for name in ("_run.py", "_hooklib.py", "_paths.py", hook):
         shutil.copy(os.path.join(HOOKS, name), os.path.join(d, name))
     if fault is None:
         return d
-    target = os.path.join(d, "_paths.py" if fault == "import" else hook)
+    if fault == "missing":
+        os.remove(os.path.join(d, hook))
+        return d
+    if fault == "lib":
+        with open(os.path.join(d, "_hooklib.py"), "w", encoding="utf-8") as fh:
+            fh.write("raise ImportError(%r)\n" % FAULT)
+        return d
+    if fault == "syntax":
+        with open(os.path.join(d, hook), "a", encoding="utf-8") as fh:
+            fh.write("\ndef (((   # %s\n" % FAULT)
+        return d
+    target = os.path.join(d, "_paths.py" if fault == "paths" else hook)
     with open(target, encoding="utf-8") as fh:
         src = fh.read()
     crash = "raise RuntimeError(%r)\n" % FAULT
-    if fault == "import":
+    if fault == "paths":
         src = crash + src
     else:
         head, sep, tail = src.partition("\ndef main():\n")
@@ -907,56 +967,61 @@ def check_hook_failures(log_path):
     failures = 0
     hooks = pretooluse_hooks()
     print("\n  упавший хук отказывает, а не разрешает (issue #156)")
+    wrapped, calls = launcher_wraps_everything()
+    failures += 0 if wrapped else 1
+    print("    %s все вызовы PreToolUse идут через запускатель (%d из %d)"
+          % ("✓" if wrapped else "✗", calls if wrapped else 0, calls))
     print("    хуков PreToolUse в settings.json: %d — %s"
           % (len(hooks), ", ".join(h[:-3] for h in hooks)))
     if not hooks:
         print("    ✗ список пуст: настройки прочитаны, а хуков на входе нет")
-        return 1
+        return failures + 1
 
-    faults = [
-        ("main", "исключение в main()"),
-        ("module", "исключение на уровне модуля"),
-        ("import", "исключение при импорте _paths"),
-    ]
     for hook in hooks:
-        for fault, title in faults:
+        for fault, title in FAULTS:
             d = broken_copy(hook, fault)
             try:
-                proc = run(hook, HARMLESS, hooks_dir=d)
+                proc = run(hook, HARMLESS, hooks_dir=d, launcher=True)
                 got = decision_of(proc)
+                reason = reason_of(proc)
             finally:
                 shutil.rmtree(d, ignore_errors=True)
-            ok = got == "deny"
+            # Требование тикета проверяется обеими половинами сразу: решение —
+            # отказ, и код возврата — не 1. Вторая половина не декорация: хук,
+            # напечатавший deny и ушедший с кодом 1, прошёл бы проверку решения,
+            # а требование «ни один путь не заканчивается кодом 1» осталось бы
+            # невыполненным.
+            ok = got == "deny" and proc.returncode != 1 and hook[:-3] in reason
             failures += 0 if ok else 1
-            print("    %s %-24s %-32s ожидали deny, получили %-5s (код %d)"
-                  % ("✓" if ok else "✗", hook[:-3], title, got, proc.returncode))
+            print("    %s %-24s %-38s deny=%-5s код=%d причина=%s"
+                  % ("✓" if ok else "✗", hook[:-3], title, got == "deny",
+                     proc.returncode, "названа" if hook[:-3] in reason else "НЕТ"))
 
     print("    — парная половина: та же копия без сбоя обязана работать как хук")
     for hook in hooks:
         d = broken_copy(hook, None)
         try:
-            passed = decision_of(run(hook, HARMLESS, hooks_dir=d))
+            passed = decision_of(run(hook, HARMLESS, hooks_dir=d, launcher=True))
             hostile = HOSTILE.get(hook)
-            blocked = decision_of(run(hook, hostile, hooks_dir=d)) if hostile else None
+            blocked = decision_of(run(hook, hostile, hooks_dir=d, launcher=True)) \
+                if hostile else None
         finally:
             shutil.rmtree(d, ignore_errors=True)
         ok = passed == "allow" and (blocked is None or blocked == "deny")
         failures += 0 if ok else 1
         detail = "README пропущен: %s" % passed
-        if hostile:
-            detail += ", свой запретный случай: %s" % blocked
-        else:
-            detail += ", запретного случая для этого хука в наборе нет"
+        detail += (", свой запретный случай: %s" % blocked) if hostile else \
+                  ", запретного случая для этого хука в наборе нет"
         print("    %s %-24s %s" % ("✓" if ok else "✗", hook[:-3], detail))
 
-    # Поломка, записанная как обычный отказ, выглядит как строгость — и тогда
-    # её никто не чинит. Событие в журнале должно называть сбой сбоем.
+    # Поломка, записанная как обычный отказ, выглядит строгостью — и тогда её
+    # никто не чинит. Событие в журнале обязано называть сбой сбоем.
     print("    — след в журнале отличим от обычного отказа")
     hook = hooks[0]
     d = broken_copy(hook, "main")
     before = _size(log_path)
     try:
-        run(hook, HARMLESS, hooks_dir=d)
+        run(hook, HARMLESS, hooks_dir=d, launcher=True)
     finally:
         shutil.rmtree(d, ignore_errors=True)
     tail = _tail(log_path, before)
@@ -966,17 +1031,44 @@ def check_hook_failures(log_path):
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-    checks = [
+    for title, ok, detail in [
         ("событие названо своим именем, а не deny",
          rec.get("event") == "hook-error" and '"event": "deny"' not in tail,
          "event=%s" % rec.get("event", "<записи нет>")),
         ("названы хук и исключение",
          rec.get("guard") == hook[:-3] and FAULT in json.dumps(rec, ensure_ascii=False),
          "guard=%s" % rec.get("guard", "—")),
-    ]
-    for title, ok, detail in checks:
+    ]:
         failures += 0 if ok else 1
         print("    %s %-52s %s" % ("✓" if ok else "✗", title, detail))
+
+    # Запасной барьер. Если решение печатать некуда, остаётся код 2 — для
+    # PreToolUse он блокирует так же, только без причины. Это единственный
+    # случай, где он срабатывает, и потому единственный способ узнать, что он
+    # вообще есть.
+    #
+    # restore_signals=False здесь обязателен: subprocess по умолчанию
+    # возвращает потомку SIG_DFL для SIGPIPE, и тот умирает от сигнала,
+    # не дойдя до обработчика. Питон, запущенный обвязкой, SIGPIPE игнорирует —
+    # воспроизводится именно это.
+    print("    — запасной барьер: решение печатать некуда")
+    d = broken_copy(hooks[0], "main")
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        rc = subprocess.run(
+            [sys.executable, os.path.join(d, "_run.py"), hooks[0]],
+            input=json.dumps(HARMLESS), text=True, stdout=write_end,
+            stderr=subprocess.PIPE, restore_signals=False, timeout=30,
+            env=dict(os.environ, CLAUDE_PROJECT_DIR=ROOT,
+                     CLAUDE_HOOK_STATE_DIR=STATE_DIR)).returncode
+    finally:
+        os.close(write_end)
+        shutil.rmtree(d, ignore_errors=True)
+    ok = rc == 2
+    failures += 0 if ok else 1
+    print("    %s %-52s код=%s (2 — блокирует и без причины)"
+          % ("✓" if ok else "✗", "недоступный stdout не превращается в пропуск", rc))
     return failures
 
 def main():

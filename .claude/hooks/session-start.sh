@@ -12,7 +12,10 @@ ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOKS="$ROOT/.claude/hooks"
 PROBLEMS=""
 
-for f in guard-secrets.py guard-git.py guard-scope.py guard-protected-files.py \
+# _run.py — запускатель хуков PreToolUse (issue #156). Его отсутствие дороже
+# отсутствия любого отдельного хука: через него идут все девять вызовов
+# на входе, и без него не сработает ни один.
+for f in _run.py guard-secrets.py guard-git.py guard-scope.py guard-protected-files.py \
          scan-untrusted.py mark-verify.py gate-quality.py; do
   if [ ! -f "$HOOKS/$f" ]; then
     PROBLEMS="$PROBLEMS\n  · хук отсутствует: $f"

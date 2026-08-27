@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 
 try:
     import fcntl
@@ -19,7 +20,17 @@ except ImportError:  # POSIX-only механизм; проект и так де�
     fcntl = None
 
 def project_dir():
-    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # os.getcwd() бросает FileNotFoundError, если каталог удалён из-под процесса.
+    # Раньше это был код 1, то есть тихий пропуск; теперь любое исключение —
+    # отказ (issue #156), и незакрытое место остановило бы работу целиком.
+    # Отсюда откат на корень репозитория по расположению самой библиотеки.
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return env
+    try:
+        return os.getcwd()
+    except OSError:
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 STATE_DIR_ENV = "CLAUDE_HOOK_STATE_DIR"
 
@@ -141,14 +152,42 @@ def repo_root(cwd=None):
     return os.path.dirname(os.path.realpath(common_dir))
 
 def read_input():
+    """Вход хука, приведённый к форме, на которой хуки не падают (issue #156).
+
+    Форму события задаёт обвязка, а не проект: новый инструмент или новая
+    версия Claude Code может прислать `tool_input` списком, `cwd` числом,
+    `command` объектом. Все пять хуков на таком входе бросали AttributeError
+    или TypeError — замерено. Пока падение означало код 1, ценой был тихий
+    пропуск; теперь это отказ, и незакрытое место остановило бы работу
+    на каждом вызове.
+
+    Приведение сделано в пользу проверки, а не в пользу тишины: непонятная
+    команда не выбрасывается, а превращается в текст и проверяется как текст.
+    """
     try:
-        return json.load(sys.stdin)
+        data = json.load(sys.stdin)
     except Exception:
         return {}
+    if not isinstance(data, dict):
+        return {}
+    ti = data.get("tool_input")
+    if not isinstance(ti, dict):
+        data["tool_input"] = {}
+    elif ti.get("command") is not None and not isinstance(ti.get("command"), str):
+        try:
+            ti["command"] = json.dumps(ti["command"], ensure_ascii=False)
+        except Exception:
+            ti["command"] = repr(ti["command"])[:2000]
+    if data.get("cwd") is not None and not isinstance(data.get("cwd"), str):
+        data.pop("cwd", None)
+    return data
 
 def log(event, payload):
-    path = log_path("guard.jsonl")
+    # Вычисление пути стоит внутри try вместе с записью: log_path → state_base
+    # → project_dir тоже бросает, а шаг «журнал» обязан быть тем шагом,
+    # который не падает никогда (issue #156).
     try:
+        path = log_path("guard.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "event": event}
         rec.update(payload)
@@ -170,6 +209,11 @@ def allowlist():
     except FileNotFoundError:
         pass
     except re.error:
+        pass
+    except (OSError, UnicodeDecodeError):
+        # Права на файл и битая кодировка. Ловятся с тех пор, как падение
+        # стало отказом (issue #156): один неверный байт в списке исключений
+        # иначе останавливал бы работу целиком.
         pass
     return out
 
@@ -225,6 +269,132 @@ def confirm(zone, reason, guard=""):
         guard=guard,
     )
 
+HOOK_ERROR = "hook-error"
+
+# Решение уже напечатано? Обработчик падения не имеет права дописать второй
+# JSON в тот же поток: разобрать такой вывод нельзя, а неразбираемый вывод
+# обвязка считает разрешением. Список, а не переменная, — чтобы менять его
+# из decide() без global.
+PRINTED = [False]
+
+def arm(guard, event="PreToolUse"):
+    """Хук заканчивается решением, а не трассировкой (issue #156).
+
+    Барьером Claude Code считает код 2 либо код 0 с решением «deny» в JSON.
+    Необработанное исключение даёт код 1 — «неблокирующая ошибка», после
+    которой команда исполняется. То есть хук, сломавшийся на разборе,
+    не отказывал: он молчал и пропускал. Цена ошибки несимметрична — ложный
+    отказ виден сразу, тихий пропуск не виден никогда.
+
+    Почему sys.excepthook, а не try вокруг main(). try покрывает только
+    исполнение функции, а падение на уровне модуля — импорт _paths,
+    компиляция регулярок, чтение окружения — происходит раньше и относится
+    к тому же классу: код не дошёл до решения. Обработчик ставится
+    из _run.py ДО того, как файл хука вообще начнёт исполняться, поэтому
+    покрыт и он сам.
+
+    Ставится только на PreToolUse. На Stop и PostToolUse не ставится, и это
+    не забывчивость: у PostToolUse инструмент уже отработал, предотвращать
+    нечего, а на Stop отказ означает «сессию нельзя закрыть» — падение
+    на уровне модуля происходит раньше чтения stop_hook_active, и получился
+    бы вечный цикл вместо тихого пропуска. Что при этом остаётся невидимым,
+    названо в docs/HOOKS.md.
+
+    Выход через os._exit оставляет невыполненными atexit и finally. Для хуков
+    PreToolUse это ничего не стоит: они не пишут состояние. Вооружать хук,
+    который пишет (mark-verify), без разбора этой цены нельзя — останутся
+    осиротевшие временные файлы.
+
+    Три требования к самому обработчику. Каждое проверено запуском, и каждое
+    про то, как отказ снова превращается в разрешение:
+
+      · обработчик не имеет права бросить исключение — CPython печатает
+        «Error in sys.excepthook» и выходит с кодом 1;
+      · выход через os._exit, а не sys.exit — SystemExit, брошенный внутри
+        обработчика, проглатывается молча: код 0 и пустой вывод;
+      · os._exit не сбрасывает буферы, а stdout хука — труба. Без явного
+        flush() напечатанное решение теряется целиком, и это ровно тот
+        дефект, который здесь чинится. flush стоит внутри того же try,
+        что и печать, и именно он ловит недоступный stdout: сама печать
+        в закрытый поток не падает, падает сброс.
+    """
+    def say(text):
+        try:
+            sys.stderr.write(text + "\n")
+            sys.stderr.flush()
+        except BaseException:
+            pass
+
+    def handler(exc_type, exc, tb):
+        # Текст исключения несёт данные: UnicodeDecodeError печатает сами
+        # байты, KeyError — ключ. Обрезается и он, и трассировка. Локальные
+        # переменные не собираются вовсе (никакого capture_locals): среди них
+        # при Write/Edit лежит содержимое файла целиком.
+        try:
+            detail = ("%s: %s" % (getattr(exc_type, "__name__", exc_type), exc))[:500]
+        except BaseException:
+            detail = "исключение, которое не удалось описать"
+        where, trace = "", ""
+        try:
+            frames = traceback.extract_tb(tb)
+            if frames:
+                where = "%s:%d" % (os.path.basename(frames[-1][0]), frames[-1][1])
+            trace = "".join(traceback.format_exception(exc_type, exc, tb))[-1500:]
+        except BaseException:
+            pass
+
+        reason = (
+            "Заблокировано хуком %s: разбор не завершён.\n"
+            "Сбой: %s\nМесто: %s\n"
+            "Хук не дошёл до решения, а несостоявшаяся проверка разрешением "
+            "не является — поэтому команда отклонена.\n"
+            "Это поломка самого механизма, а не запрет по существу: сменой формы "
+            "команды она не обходится, и чинить её самому нельзя — каталог хуков "
+            "закрыт guard-protected-files. Правильный выход один: остановиться "
+            "и доложить координатору, что обвязка сломана и чем именно. Запись "
+            "о сбое — в .claude/logs/guard.jsonl, событие «hook-error»."
+            % (guard, detail, where or "не определено"))
+
+        # Журнал раньше печати намеренно: событие «hook-error» и есть то, чем
+        # поломка отличается от строгости, и терять его нельзя, даже если
+        # напечатать решение не удастся. Причина собрана ДО этого места целиком:
+        # под MemoryError не выполнится именно форматирование.
+        # log() ловит только Exception, поэтому вызов обёрнут ещё раз —
+        # BaseException из него дал бы код 1, то есть разрешение.
+        try:
+            # Ключ намеренно не "event": log() кладёт имя события в поле
+            # с этим же именем, и payload затёр бы «hook-error» на «PreToolUse»,
+            # то есть ровно ту отличимость, ради которой запись и заводится.
+            # Поймано набором, а не чтением.
+            log(HOOK_ERROR, {"guard": guard, "hook_event": event, "error": detail,
+                             "where": where, "reason": reason, "traceback": trace})
+        except BaseException:
+            pass
+
+        if not PRINTED[0]:
+            try:
+                sys.stdout.write(json.dumps({
+                    "hookSpecificOutput": {
+                        "hookEventName": event,
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+            except BaseException:
+                # Решение напечатать не вышло. Запасной барьер — код 2:
+                # для PreToolUse он блокирует так же, только без причины.
+                say(reason)
+                os._exit(2)
+            os._exit(0)
+
+        # Решение уже в потоке: второй JSON сделал бы вывод неразбираемым,
+        # а неразбираемый вывод — это пропуск. Барьером остаётся код 2.
+        say(reason)
+        os._exit(2)
+
+    sys.excepthook = handler
+
 def decide(decision, reason, guard=""):
     """deny — заблокировать, ask — спросить у сэра, allow — пропустить молча."""
     if decision in ("deny", "ask"):
@@ -236,6 +406,12 @@ def decide(decision, reason, guard=""):
             "permissionDecisionReason": reason,
         }
     }, ensure_ascii=False))
+    # Сброс и отметка — для перехвата падений (issue #156). Буфер на трубе
+    # держит напечатанное до выхода, а обработчик выходит через os._exit,
+    # который буфер выбрасывает; отметка говорит ему, что решение уже
+    # в потоке и второй JSON туда писать нельзя.
+    sys.stdout.flush()
+    PRINTED[0] = True
     sys.exit(0)
 
 def ok():
@@ -243,7 +419,9 @@ def ok():
 
 def targets(data):
     """Строки, которые имеет смысл проверять: команда или путь к файлу."""
-    ti = data.get("tool_input") or {}
+    ti = data.get("tool_input")
+    if not isinstance(ti, dict):   # issue #156: форму задаёт обвязка, не проект
+        ti = {}
     out = []
     for key in ("command", "file_path", "notebook_path", "path", "pattern", "glob"):
         val = ti.get(key)
