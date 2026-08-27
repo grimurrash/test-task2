@@ -57,6 +57,15 @@ def emergency(guard, detail):
     os._exit(0)
 
 def main():
+    # Труба может быть открыта не в UTF-8 (LC_ALL=C и подобное). Тогда print()
+    # падает на кириллице раньше, чем решение дойдёт до трубы: барьер устоит
+    # на коде 2, но решения в JSON не будет. Стоит первой строкой main(), выше
+    # всех вызовов emergency(): аварийный отказ теряет решение точно так же.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except BaseException:
+        pass
+
     name = os.path.basename(sys.argv[1]) if len(sys.argv) > 1 else ""
     if not name.endswith(".py"):
         emergency("запускатель", "не сказано, какой хук запускать")
@@ -83,15 +92,6 @@ def main():
     #
     # Решение печатает запускатель — ровно одно и целиком; вывод сломанного
     # хука отбрасывается вместе с буфером.
-    # Труба может быть открыта не в UTF-8 (LC_ALL=C и подобное). Тогда
-    # print() внутри decide() падает на кириллице раньше, чем решение вообще
-    # дойдёт до нас: барьер устоит на коде 2, но решения в JSON не будет.
-    # Кодировка задаётся здесь, до запуска хука, — одной строкой.
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    except BaseException:
-        pass
-
     captured = tempfile.TemporaryFile()
     saved_fd = os.dup(1)
     os.dup2(captured.fileno(), 1)
@@ -107,13 +107,16 @@ def main():
             pass
         try:
             os.dup2(saved_fd, 1)
-            os.close(saved_fd)
         except BaseException:
             # Дескриптор не восстановлен: дальше write_all писал бы в буфер,
             # os.write возвращал бы успех, процесс уходил бы с кодом 0 —
             # и на трубе было бы пусто. Проглоченная ошибка в последнем слое
             # и есть молчаливый пропуск. Найдено ревью результата.
             os._exit(2)
+        try:
+            os.close(saved_fd)
+        except BaseException:
+            pass          # восстановление уже состоялось, лишний fd не стоит ничего
 
     code = 0
     try:
