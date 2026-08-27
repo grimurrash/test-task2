@@ -304,10 +304,12 @@ def confirm(zone, reason, guard=""):
 
 HOOK_ERROR = "hook-error"
 
-# Решение уже напечатано? Обработчик падения не имеет права дописать второй
-# JSON в тот же поток: разобрать такой вывод нельзя, а неразбираемый вывод
-# обвязка считает разрешением. Список, а не переменная, — чтобы менять его
-# из decide() без global.
+# Решение уже напечатано? Тогда обработчик падения второго решения не пишет.
+# Под запускателем вывод хука собирается в буфер и при падении отбрасывается,
+# так что двух JSON в потоке не бывает; флаг остаётся для прямого запуска хука
+# (человеком, набором) — там поверх напечатанного лёг бы второй ответ, а выбор
+# между двумя ответами делается в пользу отказа: код 2. Список, а не
+# переменная, — чтобы менять его из decide() без global.
 PRINTED = [False]
 
 # Поставлен ли перехват падений. Пока он не поставлен, нераспознанный вход —
@@ -468,13 +470,22 @@ def targets(data):
         ti = {}
     out = []
     for key in ("command", "file_path", "notebook_path", "path", "pattern", "glob"):
-        val = ti.get(key)
-        if isinstance(val, str) and val:
+        # as_text, а не isinstance: значение неожиданного типа раньше молча
+        # выбрасывалось, то есть путь в чужой форме не проверялся вовсе
+        # (issue #156, вторая половина находки ревью — первая касалась команды).
+        val = as_text(ti.get(key))
+        if val:
             out.append(val)
     for key in ("edits",):
         val = ti.get(key)
         if isinstance(val, list):
             for item in val:
-                if isinstance(item, dict) and isinstance(item.get("file_path"), str):
-                    out.append(item["file_path"])
+                if isinstance(item, dict) and item.get("file_path") is not None:
+                    text = as_text(item["file_path"])
+                    if text:
+                        out.append(text)
+        elif val is not None:
+            text = as_text(val)
+            if text:
+                out.append(text)
     return out

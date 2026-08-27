@@ -885,6 +885,8 @@ FAULTS = [
     ("noarm", "в библиотеке нет перехвата"),
     ("stealhook", "хук подменил sys.excepthook"),
     ("noise", "хук печатает не решение"),
+    ("child", "в дескриптор пишет дочерний процесс"),
+    ("brokenhandler", "сломан сам перехват"),
 ]
 
 # Сбой не в коде хука, а на входе в него. Тикет про то же самое: разбор
@@ -910,6 +912,13 @@ BAD_INPUTS = [
      {"tool_name": "Bash",
       "tool_input": ["git", "push", "--force", "origin", "main"]},
      {"guard-git.py": "deny"}, "allow"),
+    # Третья форма — путь, а не команда. Первые две бьют только по command,
+    # и пока приведение стояло там же, эта половина оставалась дырой: путь
+    # неожиданного типа молча выбрасывался. Найдено ревью результата.
+    ("форма другая: путь списком", None,
+     {"tool_name": "Write",
+      "tool_input": {"file_path": [os.path.join(HOME, "Downloads", "подмена.md")]}},
+     {"guard-scope.py": "deny"}, "allow"),
 ]
 
 def pretooluse_calls():
@@ -998,6 +1007,26 @@ def broken_copy(hook, fault):
         head, sep, tail = src.partition("\ndef main():\n")
         with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
             fh.write(head + "\nsys.excepthook = sys.__excepthook__\n" + sep +
+                     "    raise RuntimeError(%r)\n" % FAULT + tail)
+        return d
+    if fault == "child":
+        # Подмена sys.stdout такого вывода не видит: дочерний процесс пишет
+        # в дескриптор 1 напрямую. На трубе он оказался бы рядом с решением.
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + "\nimport subprocess as _sp\n"
+                     "_sp.run(['echo', %r])\n" % FAULT + sep + tail)
+        return d
+    if fault == "brokenhandler":
+        # Сломан не хук, а сам перехват: исключение из обработчика уходило бы
+        # наружу и давало код 1.
+        with open(os.path.join(d, hook), encoding="utf-8") as fh:
+            src = fh.read()
+        head, sep, tail = src.partition("\ndef main():\n")
+        with open(os.path.join(d, hook), "w", encoding="utf-8") as fh:
+            fh.write(head + "\ndel H.PRINTED\n" + sep +
                      "    raise RuntimeError(%r)\n" % FAULT + tail)
         return d
     if fault == "noise":

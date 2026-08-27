@@ -20,11 +20,11 @@
 сигналом. Регресс где-то обязан закончиться; он заканчивается здесь,
 на файле в двадцать строк логики, который меняется реже всех остальных.
 """
-import io
 import json
 import os
 import runpy
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -69,18 +69,39 @@ def main():
         # а нужной функции в ней не оказаться — переименование, потерянный
         # при слиянии кусок, старая копия рядом. AttributeError отсюда летел бы
         # мимо ещё не поставленного перехвата и давал код 1, то есть пропуск.
-        # Найдено ревью результата.
         handler = H.arm(guard)
     except BaseException as exc:
         emergency(guard, "не поднялась библиотека хуков: %s: %s"
                   % (type(exc).__name__, exc))
 
-    # Вывод хука собирается здесь, а не течёт сразу наружу. Так решение
-    # печатает запускатель — ровно одно и целиком, — и хук, напечатавший
-    # что-то постороннее, не может сделать вывод неразбираемым: неразбираемый
-    # вывод обвязка считает разрешением.
-    real_stdout, buffer = sys.stdout, io.StringIO()
-    sys.stdout = buffer
+    # Вывод хука перехватывается на уровне дескриптора, а не объекта sys.stdout.
+    # Разница не теоретическая: подмена объекта не видит того, что пишет
+    # в дескриптор 1 напрямую — дочерний процесс, запущенный без захвата
+    # вывода, или os.write. Такой вывод оказался бы на трубе рядом с решением,
+    # сделав его неразбираемым, а неразбираемый вывод обвязка считает
+    # разрешением. Найдено ревью результата.
+    #
+    # Решение печатает запускатель — ровно одно и целиком; вывод сломанного
+    # хука отбрасывается вместе с буфером.
+    captured = tempfile.TemporaryFile()
+    saved_fd = os.dup(1)
+    os.dup2(captured.fileno(), 1)
+    restored = [False]
+
+    def restore():
+        if restored[0]:
+            return
+        restored[0] = True
+        try:
+            sys.stdout.flush()      # буфер обязан уйти в подменённый дескриптор
+        except BaseException:
+            pass
+        try:
+            os.dup2(saved_fd, 1)
+            os.close(saved_fd)
+        except BaseException:
+            pass
+
     code = 0
     try:
         del sys.argv[1:]          # хук видит свой argv, а не наш
@@ -98,13 +119,26 @@ def main():
         # Перехват зовётся напрямую, а не через sys.excepthook: тот —
         # глобальная переменная процесса, и любой поднятый хуком модуль может
         # её перезаписать. Ссылка на обработчик получена до запуска хука.
-        sys.stdout = real_stdout
-        handler(*sys.exc_info())
+        restore()
+        try:
+            handler(*sys.exc_info())
+        except BaseException as exc:
+            # Обработчик тоже может быть сломан — тогда исключение из него
+            # ушло бы наружу и дало код 1. Класс закрывается так же, как
+            # «сломана библиотека»: аварийным отказом.
+            emergency(guard, "перехват сам не отработал: %s: %s"
+                      % (type(exc).__name__, exc))
         raise
     finally:
-        sys.stdout = real_stdout
+        restore()
 
-    out = buffer.getvalue().strip()
+    try:
+        captured.seek(0)
+        data = captured.read()
+    except BaseException:
+        data = b""
+    out = data.strip()
+
     if code not in (0, 2):
         detail = "хук завершился кодом %s, не выдав решения" % code
         # Библиотека здесь уже поднята — значит след в журнале возможен
@@ -113,19 +147,27 @@ def main():
         emergency(guard, detail)
     if out:
         try:
-            json.loads(out)
+            json.loads(out.decode("utf-8"))
         except Exception:
-            detail = ("хук напечатал не решение, а %d Б постороннего вывода"
-                      % len(out.encode("utf-8")))
+            detail = "хук напечатал не решение, а %d Б постороннего вывода" % len(out)
             note(H, guard, detail, name)
             emergency(guard, detail)
-    try:
-        real_stdout.write(out)
-        real_stdout.flush()
-    except BaseException:
-        # Решение есть, отдать его некуда. Барьером остаётся код 2.
+    # Байтами, а не через текстовый поток: труба может быть открыта не в UTF-8,
+    # и тогда запись решения падала бы на кодировке. Барьер при этом устоял бы
+    # (код 2), но причина не дошла бы ни до модели, ни до сэра.
+    if out and not write_all(out):
         os._exit(2)
     os._exit(code)
+
+def write_all(data):
+    """Отдать решение целиком. Частичная запись в трубу — не отказ, а половина
+    решения, то есть тот же неразбираемый вывод."""
+    try:
+        while data:
+            data = data[os.write(1, data):]
+        return True
+    except BaseException:
+        return False
 
 def note(H, guard, detail, where):
     """След в журнале для путей, которые перехват исключений не видит."""
