@@ -24,60 +24,96 @@
 оказаться самим worktree, а не основной копией. Теперь корень — общий для
 обеих через `git rev-parse --git-common-dir` (`_hooklib.repo_root`).
 """
+import hashlib
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hooklib as H
-from _paths import INLINE_CODE, WRITE_INTENT, normalize, path_candidates, resolve
+from _paths import (INLINE_CODE, UNRESOLVED, code_writes, normalize,
+                    resolve, unresolved_target, write_candidates)
 
+# Список защищённых путей. Один список на обе проверки — по пути, собранному
+# разбором, и по упоминанию внутри встроенного кода. Раньше списков было два,
+# и они разошлись ровно так, как расходятся два перечисления одного и того же:
+# `.claude/settings.json.bak` первый пропускал, второй ловил.
+#
+# Обе ошибки, найденные в issue #175, — про ЯКОРЯ, и обе в одну сторону.
+#
+# Якорь конца строки (`settings\.json$`) требовал, чтобы имя на этом и
+# кончалось, — и `.claude/settings.local.json` переставал быть настройками.
+# Тем же промахом мимо защиты проходили `CLAUDE.local.md` и соседи по каталогу
+# состояния. Поэтому имя файла теперь описывает СЕМЬЮ: необязательный средний
+# сегмент (`settings.local.json`) и любое продолжение через точку
+# (`unlock.json.tmp-1234`, `settings.json.bak` — форма атомарной записи).
+#
+# Якорь слэша на конце каталога (`\.claude/hooks/`) требовал, чтобы путь
+# продолжался, — и защищал содержимое каталога, не защищая сам каталог:
+# `rm -rf .claude/hooks` и `mv .github/workflows /tmp/x` проходили без пропуска
+# целиком. Проверено запуском, подтверждено координатором отдельным прогоном.
+# Поэтому каталог теперь кончается либо строкой, либо не-именным символом.
+#
+# Начало строки намеренно НЕ якорится: путь приходит и отдельным токеном,
+# и приклеенным к ключу (`of=.claude/settings.json` у `dd`). Исключение —
+# `CLAUDE.md`: у него нет каталога в шаблоне, и без ограничения слева под него
+# попал бы всякий `МОЙCLAUDE.md`.
 PROTECTED = [
-    (r"\.claude/settings\.json$", "настройки проекта и список хуков"),
-    (r"\.claude/hooks/", "сами хуки"),
-    (r"\.claude/guard-allow\.txt$", "список исключений из запретов"),
-    (r"\.claude/state/unlock\.json$", "выданные пропуски"),
-    (r"\.github/workflows/", "конфигурация CI"),
-    (r"(?:^|/)CLAUDE\.md$", "правила проекта"),
-    (r"scripts/unlock\.sh$", "выдача пропусков"),
+    (r"\.claude/settings(?:\.[\w\-]+)?\.json(?:$|[^\w\-])",
+     "настройки проекта и список хуков"),
+    (r"\.claude/hooks(?:$|[^\w\-])", "сами хуки"),
+    (r"\.claude/state(?:$|[^\w\-])",
+     "состояние механизмов: выданные пропуски и отметки о прогонах"),
+    (r"\.claude/logs(?:$|[^\w\-])", "журнал работы механизмов"),
+    (r"\.claude/guard-allow\.txt(?:$|[^\w\-])", "список исключений из запретов"),
+    # Каталог обвязки целиком — уровень выше, чем `.claude/hooks`. Тот же
+    # промах якоря, только полнее: `rm -rf .claude` уносит и хуки, и настройки,
+    # и пропуски, и журнал разом. Показано ревьюером результата прогоном.
+    (r"\.claude/?(?:$|[^\w\-./])", "каталог обвязки целиком"),
+    (r"\.github/workflows(?:$|[^\w\-])", "конфигурация CI"),
+    (r"\.github/?(?:$|[^\w\-./])", "каталог CI целиком"),
+    (r"(?:^|[^\w.\-])CLAUDE(?:\.[\w\-]+)?\.md(?:$|[^\w\-])", "правила проекта"),
+    # Файла нет — в этом и дело. Матчеры в .claude/settings.json перечисляют
+    # инструменты поимённо (`Bash`, `Write|Edit|…`, `Read|Grep|Glob`), а
+    # инструмент MCP-сервера зовётся `mcp__<сервер>__<имя>` и не совпадает
+    # ни с одним из них. Создать `.mcp.json` — значит завести пишущий
+    # инструмент, мимо которого проходят все пять хуков.
+    (r"(?:^|[^\w.\-])\.mcp\.json(?:$|[^\w\-])",
+     "список MCP-серверов: пишущий инструмент мимо матчеров хуков"),
+    (r"scripts/unlock\.sh(?:$|[^\w\-])", "выдача пропусков"),
+    # ci.yml — указатель, проверки лежат в этих файлах. Защищать указатель
+    # и не защищать цель — та же подмена, что чинится здесь якорями.
+    (r"scripts/ci(?:$|[^\w\-])", "тела проверок CI"),
+    (r"(?:^|[^\w.\-])\.ci-stack(?:$|[^\w\-])",
+     "выбор стека, по которому идут проверки CI"),
 ]
 
-# Те же файлы, но упомянутые внутри команды. Путь может стоять в кавычках,
-# внутри встроенного кода, сразу после скобки — якоря «начало строки или слэш»
-# там не работают: python3 -c "open('CLAUDE.md','w')" прошёл мимо проверки,
-# потому что в токене не было ни одного слэша.
-MENTION = [
-    (r"\.claude/settings\.json", "настройки проекта и список хуков"),
-    (r"\.claude/hooks/", "сами хуки"),
-    (r"\.claude/guard-allow\.txt", "список исключений из запретов"),
-    (r"\.claude/state/unlock\.json", "выданные пропуски"),
-    (r"\.github/workflows/", "конфигурация CI"),
-    (r"(?:^|[^\w.\-/])CLAUDE\.md(?![\w.\-])", "правила проекта"),
-    (r"scripts/unlock\.sh", "выдача пропусков"),
-]
+# Тот же список для упоминания внутри команды. Оставлен отдельным именем,
+# чтобы места использования читались по-разному, но содержимое одно: два
+# перечисления одного и того же расходятся при первой же правке.
+MENTION = PROTECTED
 
-# Запуск скрипта выдачи пропусков — именно запуск, а не упоминание. Первая
-# версия ловила имя в любом месте команды и блокировала даже коммит, в тексте
-# которого это имя встречалось. Механизм, дающий ложные тревоги, обходят так же
-# охотно, как дырявый.
-# Признаки записи внутри встроенного кода. Граница репозитория считает любой
-# `python3 -c` намерением записи — там цена ошибки высока, наружу пишут один раз.
-# Здесь та же строгость даёт перегиб: команда, читающая .claude/state/unlock.json,
-# получала отказ наравне с командой, его переписывающей. Читать свои же файлы
-# правил можно, менять — нет.
-INLINE_WRITE = re.compile(
-    r"open\s*\([^)]*['\"][wax]\+?['\"]"          # open(path, 'w'), 'a', 'x'
-    r"|open\s*\([^)]*['\"]r\+['\"]"              # open(path, 'r+') — тоже запись
-    r"|\bmode\s*=\s*['\"][wax]"
-    r"|\.write(?:lines|_text|_bytes)?\s*\("
-    r"|\bwriteFileSync\b|\bappendFileSync\b|\bfs\.\w*[Ww]rite\w*\s*\("
-    r"|\b(?:json|yaml|pickle)\.dump\s*\("
-    r"|\b(?:unlink|remove|rmtree|rename|replace|truncate|mkdir|makedirs|chmod|symlink)\s*\("
-    r"|\bshutil\.\w+\s*\(",
-    re.I)
+# Инструменты, которые не пишут. Проверять их незачем, а вред очевиден:
+# расширение списка защищённых путей не должно превратиться в запрет смотреть
+# на них. Сегодня хук к ним и не подключён (см. matcher в .claude/settings.json),
+# но правило должно держаться на самом хуке, а не на строке настроек, которую
+# правит другая задача.
+READ_ONLY_TOOLS = ("Read", "NotebookRead", "Grep", "Glob")
 
 RUN_UNLOCK = re.compile(
-    r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b")
+    r"(?:^|[;&|]\s*)(?:(?:bash|sh|zsh|source)\s+)?(?:\./)?scripts/unlock\.sh\b"
+    r"(?P<rest>[^;&|\n]*)")
+# Отвод вывода режима не меняет: `unlock.sh --list 2>&1 | head -3` —
+# всё ещё печать. Именно эта форма и стоит шестым ложным отказом
+# в тикете: координатор смотрел, жив ли пропуск.
+READ_ONLY_MODE = re.compile(r"^\s*(?:--list|--help|-h)?\s*(?:\d*[<>]+\s*\S*\s*)*$")
+
+def issues_unlock(normalized):
+    """Есть ли в команде запуск, который ВЫДАЁТ пропуск."""
+    for m in RUN_UNLOCK.finditer(normalized):
+        if not READ_ONLY_MODE.match(m.group("rest") or ""):
+            return True
+    return False
 
 # Подмена каталога состояния хуков (issue #54). Переменная говорит хуку, где
 # лежит unlock.json, — то есть говорит, ОТКУДА ЧИТАТЬ РАЗРЕШЕНИЯ. Кто её задаёт,
@@ -118,9 +154,26 @@ def protected_hit(text, root):
         variants.append(os.path.relpath(resolved, root))
     for variant in variants:
         for pattern, human in PROTECTED:
-            if re.search(pattern, variant):
+            if re.search(pattern, variant, re.I):
                 return human
     return None
+
+def refuse(human, cmd, why):
+    """Отказ или пропуск по открытой зоне — одной формой на все ветки.
+
+    Вместе с причиной в журнал уходят длина команды и её отпечаток: журнал
+    пишет `cmd[:300]`, и 21 из 49 уникальных команд в боевом guard.jsonl
+    усечены так, что воспроизвести их нельзя. Приёмка #166 требует число
+    ложных отказов «до и после» — на усечённой выборке оно несопоставимо.
+    """
+    H.confirm(
+        ZONE,
+        "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
+        "Команда: %s\nПочему: %s\nДлина команды: %d, отпечаток: %s"
+        % (human, cmd[:300], why, len(cmd),
+           hashlib.sha1(cmd.encode("utf-8")).hexdigest()[:12]),
+        guard="guard-protected-files",
+    )
 
 def main():
     data = H.read_input()
@@ -128,6 +181,9 @@ def main():
     # issue #24: корень — общий для основной копии и её worktree, а не то,
     # что случайно лежит в CLAUDE_PROJECT_DIR/cwd. См. _hooklib.repo_root.
     root = H.repo_root(data.get("cwd"))
+
+    if tool in READ_ONLY_TOOLS:
+        H.ok()
 
     if tool == "Bash":
         cmd = (data.get("tool_input") or {}).get("command") or ""
@@ -138,7 +194,7 @@ def main():
         # Пропуск себе не выдают. Запуск scripts/unlock.sh из сессии агента
         # запрещён всегда — в том числе при открытой зоне, иначе агент продлевал
         # бы себе разрешение сам, и весь механизм сводился бы к одной команде.
-        if RUN_UNLOCK.search(normalized):
+        if issues_unlock(normalized):
             H.decide(
                 "deny",
                 "Заблокировано хуком guard-protected-files: выдача пропуска из сессии агента.\n"
@@ -161,35 +217,34 @@ def main():
                 guard="guard-protected-files",
             )
 
-        writes = bool(WRITE_INTENT.search(normalized))
-        inline = bool(INLINE_CODE.search(normalized))
-        if not writes and not inline:
-            H.ok()
-        # Встроенный код без единого признака записи — это чтение.
-        if not writes and inline and not INLINE_WRITE.search(normalized):
-            H.ok()
+        writes = write_candidates(cmd)
+        blind = unresolved_target(writes)
 
-        for candidate in path_candidates(cmd):
+        # Цель записи, сведённая к пути, проверяется по списку. Признак записи
+        # больше не берётся по всей строке: он теперь свойство ПОЗИЦИИ, а не
+        # команды. Из-за прежней развязки `rm` по файлу в /tmp вместе
+        # с `git diff` по хуку читались как правка хука — семь из восьми
+        # воспроизводимых ложных отказов боевого журнала.
+        for candidate in writes:
+            if candidate == UNRESOLVED:
+                continue
             human = protected_hit(candidate, root)
             if human:
-                H.confirm(
-                    ZONE,
-                    "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
-                    "Команда: %s" % (human, cmd[:300]),
-                    guard="guard-protected-files",
-                )
+                refuse(human, cmd, "цель записи: %s" % candidate[:120])
 
-        # Путь мог не выделиться в отдельный аргумент — он бывает внутри кавычек
-        # встроенного кода. Здесь ищем упоминание по всей команде, но только когда
-        # намерение записи уже установлено выше.
-        for pattern, human in MENTION:
-            if re.search(pattern, normalized):
-                H.confirm(
-                    ZONE,
-                    "Заблокировано хуком guard-protected-files: команда правит «%s».\n"
-                    "Команда: %s" % (human, cmd[:300]),
-                    guard="guard-protected-files",
-                )
+        # Граница, которая не снимается. Встроенный код разобрать надёжно
+        # нельзя, и упоминание защищённого пути внутри него остаётся записью.
+        # Признаки записи ищутся и в СЫРОЙ команде: normalize снимает кавычки,
+        # а половина шаблона на них и держится — из-за этого
+        # `python3 -c "f = open('CLAUDE.md','w')"` проходил без пропуска.
+        if INLINE_CODE.search(normalized) and code_writes(cmd, normalized):
+            blind = True
+
+        if blind:
+            for pattern, human in MENTION:
+                if re.search(pattern, normalized, re.I):
+                    refuse(human, cmd, "цель записи не разобрана — "
+                                       "упоминание считается правкой")
         H.ok()
 
     for text in H.targets(data):
