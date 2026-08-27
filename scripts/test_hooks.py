@@ -1422,19 +1422,27 @@ class Counting(io.TextIOBase):
         self.stream.flush()
 
 def check_doc_count(counted):
-    """Число проверок в docs/HOOKS.md против прогона."""
+    """Число проверок в docs/HOOKS.md против прогона — как нижняя граница.
+
+    Точное равенство здесь потребовать нельзя, и это выяснилось не рассуждением,
+    а красным CI: на macOS прогон даёт 451 проверку, на ubuntu — 480. Часть
+    кейсов зависит от платформы, и обещать точное число значит обещать то, что
+    фактом не является. Нижняя граница фактом является: проверок не может стать
+    меньше обещанного, а именно уменьшение и есть та порча, ради которой сверка
+    заводилась.
+    """
     path = os.path.join(ROOT, "docs", "HOOKS.md")
     promised = None
     try:
         with open(path, encoding="utf-8") as fh:
-            m = re.search(r"—\s*(\d+)\s*провер", fh.read())
+            m = re.search(r"не меньше\s*(\d+)\s*провер", fh.read())
         promised = int(m.group(1)) if m else None
     except OSError:
         pass
-    ok = promised == counted
-    print("\n  %s документ обещает проверок: %s, прогон дал: %d"
-          % ("✓" if ok else "✗", promised if promised is not None else "<не нашлось>",
-             counted))
+    ok = promised is not None and counted >= promised
+    print("\n  %s документ обещает не меньше %s проверок, прогон дал: %d"
+          % ("✓" if ok else "✗",
+             promised if promised is not None else "<обещания не нашлось>", counted))
     return 0 if ok else 1
 
 def main():
