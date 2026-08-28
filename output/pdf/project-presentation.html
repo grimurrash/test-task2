@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Идемпотентный платёжный сервис — презентация</title>
+  <style>
+    :root {
+      --accent: #12617a;
+      --ink: #12222b;
+      --muted: #5b6c75;
+      --line: #cbd7dc;
+      --pale: #edf4f6;
+      --white: #fff;
+    }
+    @page { size: 1280px 720px; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #dfe6e9; font-family: Inter, "Helvetica Neue", Arial, sans-serif; color: var(--ink); }
+    .slide {
+      width: 1280px;
+      height: 719px;
+      padding: .58in .68in .48in;
+      position: relative;
+      overflow: hidden;
+      page-break-after: always;
+      page-break-inside: avoid;
+      break-inside: avoid;
+      background: var(--white);
+      display: flex;
+      flex-direction: column;
+    }
+    .slide:last-child { page-break-after: auto; }
+    .slide + .slide { page-break-before: always; }
+    .topline { position: absolute; left: .68in; right: .68in; top: .34in; height: 4px; background: var(--accent); z-index: 5; }
+    .eyebrow { margin-top: .03in; color: var(--accent); font-weight: 750; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 1.1in 0 .25in; max-width: 10.6in; font-size: 74px; line-height: 1.02; letter-spacing: -.035em; }
+    h2 { margin: .20in 0 .26in; max-width: 11.6in; font-size: 48px; line-height: 1.08; letter-spacing: -.025em; }
+    .lead { font-size: 30px; line-height: 1.34; color: var(--muted); max-width: 9.3in; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .52in; align-items: stretch; flex: 1; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: .34in; align-items: stretch; flex: 1; }
+    .metric { border-top: 2px solid var(--line); padding-top: .19in; }
+    .metric strong { display: block; color: var(--accent); font-size: 70px; line-height: .98; letter-spacing: -.04em; }
+    .metric span { display: block; margin-top: .11in; font-size: 24px; line-height: 1.25; }
+    .metric small { display: block; margin-top: .08in; color: var(--muted); font-size: 17px; line-height: 1.3; }
+    .statement { align-self: center; font-size: 46px; line-height: 1.18; font-weight: 730; max-width: 10.7in; }
+    .statement em { color: var(--accent); font-style: normal; }
+    ul { margin: .05in 0 0; padding-left: .32in; font-size: 27px; line-height: 1.35; }
+    li { margin: .12in 0; }
+    li::marker { color: var(--accent); }
+    .process { display: grid; grid-template-columns: repeat(4, 1fr); gap: .26in; margin-top: .3in; }
+    .step { border-top: 5px solid var(--accent); padding-top: .18in; }
+    .step .n { font-size: 17px; color: var(--muted); }
+    .step h3 { margin: .08in 0; font-size: 28px; line-height: 1.12; }
+    .step p { margin: 0; font-size: 19px; line-height: 1.3; color: var(--muted); }
+    .bar { display: grid; grid-template-columns: 50fr 6fr; height: .62in; margin: .18in 0 .32in; overflow: hidden; }
+    .bar .full { background: var(--accent); color: white; display: flex; align-items: center; padding-left: .22in; font-size: 24px; font-weight: 700; }
+    .bar .tail { background: #9ebac5; color: var(--ink); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 750; }
+    .compare { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .34in; margin-top: .22in; }
+    .compare > div { padding: .23in .25in; background: var(--pale); border-top: 4px solid var(--line); }
+    .compare .winner { border-color: var(--accent); }
+    .compare strong { display: block; font-size: 64px; color: var(--accent); line-height: 1; }
+    .compare h3 { margin: .12in 0 .08in; font-size: 25px; }
+    .compare p { margin: 0; color: var(--muted); font-size: 18px; line-height: 1.28; }
+    .quote { border-left: 6px solid var(--accent); padding: .04in 0 .04in .32in; font-size: 39px; line-height: 1.2; font-weight: 680; max-width: 11in; }
+    .next { counter-reset: steps; list-style: none; padding: 0; margin-top: .15in; }
+    .next li { counter-increment: steps; display: grid; grid-template-columns: .52in 1fr; gap: .18in; align-items: start; margin: .17in 0; font-size: 26px; }
+    .next li::before { content: counter(steps); display: grid; place-items: center; width: .46in; height: .46in; background: var(--accent); color: white; font-size: 20px; font-weight: 750; }
+    .footer { position: absolute; left: .68in; right: .68in; bottom: .2in; display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
+    .dark { background: var(--ink); color: white; }
+    .dark .topline { background: #55a6bc; }
+    .dark .eyebrow, .dark em { color: #79c0d1; }
+    .dark .lead, .dark .footer { color: #bdd0d7; }
+    .dark .compare h3 { color: var(--ink); }
+    .audit-title { font-size: 44px; }
+    .audit-statement { font-size: 38px; }
+    .audit-grid { display: grid; grid-template-columns: .8fr 1.5fr; gap: .55in; }
+    .audit-grid .metric span { font-size: 22px; }
+    .accent-block { margin-top: auto; background: var(--accent); color: white; padding: .26in .32in; font-size: 30px; line-height: 1.24; font-weight: 680; }
+  </style>
+</head>
+<body>
+  <section class="slide dark">
+    <div class="topline"></div>
+    <div class="eyebrow">Итоговый проектный отчёт</div>
+    <h1>Проверка должна доказывать свойство</h1>
+    <div class="lead">Идемпотентный платёжный сервис: результат, доказательства и уроки процесса</div>
+    <div class="footer"><span>Рашит · 28 августа 2026</span><span>1 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Проблема</div>
+    <h2>Зелёная проверка ещё не означает, что проверено нужное</h2>
+    <div class="grid-3">
+      <div class="metric"><strong>13</strong><span>случаев «правда о другом предмете»</span><small>Тест или замер отвечал не на тот вопрос.</small></div>
+      <div class="metric"><strong>24</strong><span>ложных отказа защиты</span><small>Упоминание признака принималось за действие.</small></div>
+      <div class="metric"><strong>3</strong><span>реальных пропуска защиты</span><small>Тихие дефекты не мешают работе и не находят себя сами.</small></div>
+    </div>
+    <div class="footer"><span>Источник: REPORT.md, разделы 4.1 и 5</span><span>2 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Что сделали</div>
+    <h2>Собрали продукт, который запускается одной командой</h2>
+    <div class="grid-3">
+      <div class="metric"><strong>API</strong><span>идемпотентные платежи</span><small>Контракт и реализация сервиса.</small></div>
+      <div class="metric"><strong>UI</strong><span>браузерная песочница</span><small>Сценарии запросов и журнал ответов.</small></div>
+      <div class="metric"><strong>Docs</strong><span>страница документации</span><small>Запуск, контракт и примеры.</small></div>
+    </div>
+    <div class="accent-block">Одна команда: docker compose up</div>
+    <div class="footer"><span>Источник: REPORT.md, раздел 1</span><span>3 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Что сделали</div>
+    <h2>Разделили производство и приёмку результата</h2>
+    <div class="process">
+      <div class="step"><div class="n">01</div><h3>Задача</h3><p>Отдельное ожидаемое поведение.</p></div>
+      <div class="step"><div class="n">02</div><h3>Ветка</h3><p>Изолированная рабочая копия.</p></div>
+      <div class="step"><div class="n">03</div><h3>Приёмка</h3><p>Проверяет не автор изменения.</p></div>
+      <div class="step"><div class="n">04</div><h3>Слияние</h3><p>Только через pull request.</p></div>
+    </div>
+    <div class="grid-2" style="margin-top:.36in;flex:0 0 auto">
+      <div class="metric"><strong>50</strong><span>задач</span></div>
+      <div class="metric"><strong>66</strong><span>слитых pull request</span></div>
+    </div>
+    <div class="footer"><span>Срез: 25 августа 2026, 20:17</span><span>4 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Как проверяли</div>
+    <h2 class="audit-title">Аудит охватил все 56 требований</h2>
+    <div class="grid-3">
+      <div class="metric"><strong>56/56</strong><span>подтверждены прогоном</span><small>Шесть прежних хвостов закрыты в #180.</small></div>
+      <div class="metric"><strong>0</strong><span>частичных подтверждений</span><small>Каждый край закреплён проверкой.</small></div>
+      <div class="metric"><strong>0</strong><span>требований без реализации</span><small>Итог слит в pull request #183.</small></div>
+    </div>
+    <div class="footer"><span>Источник: аудит готовности #180</span><span>5 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Как проверяли</div>
+    <h2>Чистый клон подтвердил финальное состояние</h2>
+    <div class="grid-3">
+      <div class="metric"><strong>3/3</strong><span>сервиса здоровы</span><small>API, песочница, документация.</small></div>
+      <div class="metric"><strong>293</strong><span>теста прошли</span><small>293 pass · 0 fail.</small></div>
+      <div class="metric"><strong>21</strong><span>проверка чистого клона</span><small>Расхождений нет, код возврата 0.</small></div>
+    </div>
+    <div class="footer"><span>Источник: REPORT.md, раздел 2.1</span><span>6 / 10</span></div>
+  </section>
+
+  <section class="slide dark">
+    <div class="topline"></div><div class="eyebrow">Как проверяли</div>
+    <h2>Непредупреждённый взгляд нашёл то, что пропустили внутренние проверки</h2>
+    <div class="compare">
+      <div><strong>0</strong><h3>Исполнитель</h3><p>Девять собственных парных проверок.</p></div>
+      <div><strong>2</strong><h3>Принимающий</h3><p>Проверка по известным классам риска.</p></div>
+      <div class="winner"><strong>8</strong><h3>Внешняя линза</h3><p>Включая блокирующее снятие защиты с корня.</p></div>
+    </div>
+    <div class="footer"><span>Кейс: задача #43</span><span>7 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Что получилось</div>
+    <h2>Продукт работает — и проверка нашла отказ его главного свойства</h2>
+    <div class="grid-2">
+      <div class="statement"><em>Один ключ</em><br>должен означать<br>один платёж</div>
+      <div>
+        <div class="metric"><strong>2</strong><span>платежа на один ключ</span><small>Дублирующийся заголовок создавал тихий дефект: оба ответа успешны, ошибок нет.</small></div>
+      </div>
+    </div>
+    <div class="accent-block">Самый дорогой дефект обнаружен ломателем и закреплён отдельным требованием.</div>
+    <div class="footer"><span>Кейс: дефект #73</span><span>8 / 10</span></div>
+  </section>
+
+  <section class="slide dark">
+    <div class="topline"></div><div class="eyebrow">Выводы</div>
+    <h2>Качество определяется не количеством проверок, а точностью доказательства</h2>
+    <div class="quote">Что именно измеряем?<br>Почему получился этот результат?<br>Ту ли версию проверяем?</div>
+    <div class="lead" style="margin-top:.34in">Три вопроса отличают доказательство от убедительной имитации.</div>
+    <div class="footer"><span>Источник: REPORT.md, раздел 4.1</span><span>9 / 10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="topline"></div><div class="eyebrow">Что дальше</div>
+    <h2>Следующий цикл удерживает доказанный результат</h2>
+    <ol class="next">
+      <li><span><strong>Развести коды приёмочного скрипта</strong>: стенд не поднят и поведение разошлось.</span></li>
+      <li><span><strong>Сохранить независимый регресс исправлений</strong>, выполняемый не авторами дефектов.</span></li>
+      <li><span><strong>Запускать чистый клон повторяемо</strong> на нестандартных портах перед сдачей.</span></li>
+      <li><span><strong>Синхронизировать workflow с практикой</strong> и закрепить правило механизмом.</span></li>
+    </ol>
+    <div class="accent-block">Базовый уровень уже достигнут: 56 / 56 подтверждены прогоном.</div>
+    <div class="footer"><span>Приоритеты следующего цикла</span><span>10 / 10</span></div>
+  </section>
+</body>
+</html>
